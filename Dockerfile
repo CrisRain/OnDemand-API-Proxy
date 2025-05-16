@@ -16,6 +16,7 @@ COPY auth.py .
 COPY client.py .
 COPY routes.py .
 COPY utils.py .
+COPY config.py .
 COPY static/ static/
 COPY templates/ templates/
 
@@ -27,4 +28,4 @@ ENV LANG=C.UTF-8
 
 CMD ["chmod", "0755", "-r" ,"/app"]
 # 启动主程序
-CMD ["python", "/app/app.py"]
+CMD ["python", "app.py"]
