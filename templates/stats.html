@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="refresh" content="60">
+    <title>2API 用量统计</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@300;400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="dashboard-wrapper">
+        <header class="main-header">
+            <div class="header-left">
+                <h1><i class="fas fa-chart-line"></i> 2API 监控面板</h1>
+            </div>
+            <div class="header-right">
+                <div class="time-info">
+                    <span><i class="fas fa-clock"></i> 最后更新: {{ current_time }}</span>
+                    <span><i class="fas fa-save"></i> 最后保存: {{ stats.last_saved|format_datetime if stats.last_saved != "从未保存" else "从未保存" }}</span>
+                </div>
+                <div class="actions">
+                    <form action="/save_stats" method="post">
+                        <button type="submit" class="save-button" title="保存统计数据"><i class="fas fa-save"></i></button>
+                    </form>
+                    <button id="refresh-btn" class="refresh-button" title="刷新数据"><i class="fas fa-sync-alt"></i></button>
+                </div>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <div class="auto-refresh-bar">
+                <div class="refresh-progress">
+                    <div class="progress-bar" id="refresh-progress-bar" style="width: 100%;"></div>
+                </div>
+                <div class="refresh-info">
+                    <span>数据将在 <span id="countdown">60</span> 秒后自动刷新</span>
+                </div>
+            </div>
+        
+            <!-- 统计概览部分 -->
+            <section id="dashboard" class="dashboard-section active-section">
+                <div class="section-header">
+                    <h2><i class="fas fa-tachometer-alt"></i> 统计概览</h2>
+                </div>
+
+                <div class="stats-overview">
+                    <div class="stats-card primary">
+                        <div class="stats-icon">
+                            <i class="fas fa-server"></i>
+                        </div>
+                        <div class="stats-content">
+                            <h3>总请求数</h3>
+                            <div class="stats-number">{{ stats.total_requests|format_number }}</div>
+                            <div class="stats-trend positive">
+                                <i class="fas fa-arrow-up"></i>
+                                {% set today_requests = stats.daily_usage.get(current_time.split()[0], 0) %}
+                                {% set growth_rate = (today_requests / (stats.total_requests - today_requests) * 100) if (stats.total_requests - today_requests) > 0 else 100 %}
+                                {{ growth_rate|round(1) }}% 今日
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="stats-card success">
+                        <div class="stats-icon">
+                            <i class="fas fa-check-circle"></i>
+                        </div>
+                        <div class="stats-content">
+                            <h3>成功率</h3>
+                            <div class="stats-number">{{ (stats.successful_requests / stats.total_requests * 100) if stats.total_requests > 0 else 0 | round(2) }}%</div>
+                            <div class="stats-detail">
+                                成功: {{ stats.successful_requests|format_number }} / 失败: {{ stats.failed_requests|format_number }}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="stats-card info">
+                        <div class="stats-icon">
+                            <i class="fas fa-bolt"></i>
+                        </div>
+                        <div class="stats-content">
+                            <h3>平均响应时间</h3>
+                            <div class="stats-number">
+                                {% set total_duration = 0 %}
+                                {% for req in stats.request_history if req.success %}
+                                    {% set total_duration = total_duration + req.duration_ms %}
+                                {% endfor %}
+                                {{ (total_duration / stats.successful_requests) if stats.successful_requests > 0 else 0 | round(0) }} <small>ms</small>
+                            </div>
+                            <div class="stats-detail">
+                                最快: {{ stats.request_history|selectattr('success')|map(attribute='duration_ms')|min|default(0)|int }} ms
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="stats-card warning">
+                        <div class="stats-icon">
+                            <i class="fas fa-coins"></i>
+                        </div>
+                        <div class="stats-content">
+                            <h3>总 Tokens</h3>
+                            <div class="stats-number">{{ stats.total_tokens|format_number }}</div>
+                            <div class="stats-detail">
+                                提示: {{ stats.total_prompt_tokens|format_number }} / 完成: {{ stats.total_completion_tokens|format_number }}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="stats-card danger">
+                        <div class="stats-icon">
+                            <i class="fas fa-dollar-sign"></i>
+                        </div>
+                        <div class="stats-content">
+                            <h3>估算成本</h3>
+                            <div class="stats-number">
+                                {% set gpt4_cost = (stats.model_tokens.get('gpt-4.1', 0) * 0.00001) %}
+                                {% set claude_cost = (stats.model_tokens.get('claude-3.7-sonnet', 0) * 0.000008) %}
+                                {% set other_cost = ((stats.total_tokens - stats.model_tokens.get('gpt-4.1', 0) - stats.model_tokens.get('claude-3.7-sonnet', 0)) * 0.000005) %}
+                                ${{ (gpt4_cost + claude_cost + other_cost) | round(2) }}
+                            </div>
+                            <div class="stats-detail">
+                                平均: ${{ ((gpt4_cost + claude_cost + other_cost) / stats.total_requests) if stats.total_requests > 0 else 0 | round(4) }}/请求
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="stats-card secondary">
+                        <div class="stats-icon">
+                            <i class="fas fa-robot"></i>
+                        </div>
+                        <div class="stats-content">
+                            <h3>模型使用</h3>
+                            <div class="stats-number">{{ stats.model_usage.keys()|list|length }}</div>
+                            <div class="stats-detail">
+                                {% set top_model = stats.model_usage.items()|list|sort(reverse=true, attribute=1)|first %}
+                                最常用: {{ top_model[0] }} ({{ top_model[1] }}次)
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 简化的图表部分 -->
+                <div class="dashboard-charts">
+                    <div class="chart-row">
+                        <div class="chart-card">
+                            <div class="chart-header">
+                                <h3><i class="fas fa-calendar-day"></i> 每日请求趋势</h3>
+                            </div>
+                            <div class="chart-body">
+                                <canvas id="dailyChart"
+                                    data-labels='{{ stats.daily_usage.keys()|list|tojson }}'
+                                    data-values='{{ stats.daily_usage.values()|list|tojson }}'></canvas>
+                            </div>
+                        </div>
+                        
+                        <div class="chart-card">
+                            <div class="chart-header">
+                                <h3><i class="fas fa-robot"></i> 模型使用分布</h3>
+                            </div>
+                            <div class="chart-body">
+                                <canvas id="modelChart"
+                                    data-labels='{{ stats.model_usage.keys()|list|tojson }}'
+                                    data-values='{{ stats.model_usage.values()|list|tojson }}'></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        
+            <!-- 简化的请求历史部分 -->
+            <section id="history" class="dashboard-section">
+                <div class="section-header">
+                    <h2><i class="fas fa-history"></i> 请求历史</h2>
+                    <div class="history-actions">
+                        <div class="search-box">
+                            <input type="text" id="history-search" placeholder="搜索请求...">
+                            <i class="fas fa-search"></i>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="table-container">
+                    <table id="history-table" class="data-table">
+                        <thead>
+                            <tr>
+                                <th data-sort="id">请求ID <i class="fas fa-sort"></i></th>
+                                <th data-sort="timestamp">时间 <i class="fas fa-sort"></i></th>
+                                <th data-sort="model">模型 <i class="fas fa-sort"></i></th>
+                                <th data-sort="account">账户 <i class="fas fa-sort"></i></th>
+                                <th data-sort="status">状态 <i class="fas fa-sort"></i></th>
+                                <th data-sort="duration">耗时(ms) <i class="fas fa-sort"></i></th>
+                                <th data-sort="total">总Tokens <i class="fas fa-sort"></i></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for req in stats.request_history|reverse %}
+                            <tr data-model="{{ req.model }}" data-status="{{ 'success' if req.success else 'fail' }}" data-id="{{ req.id }}">
+                                <td title="{{ req.id }}">{{ req.id[:8] }}...</td>
+                                <td>{{ req.timestamp|format_datetime }}</td>
+                                <td><span class="model-badge small">{{ req.model }}</span></td>
+                                <td title="{{ req.account }}">
+                                    <div class="account-cell">
+                                        <span class="account-avatar small">{{ req.account[0]|upper }}</span>
+                                        <span>{{ req.account.split('@')[0] }}</span>
+                                    </div>
+                                </td>
+                                <td class="{{ 'success' if req.success else 'fail' }}">
+                                    <span class="status-badge {{ 'success' if req.success else 'fail' }}">
+                                        <i class="fas {{ 'fa-check-circle' if req.success else 'fa-times-circle' }}"></i>
+                                        {{ '成功' if req.success else '失败' }}
+                                    </span>
+                                </td>
+                                <td>{{ req.duration_ms|format_duration }}</td>
+                                <td>{{ (req.total_tokens if req.total_tokens is defined else req.estimated_total_tokens if req.estimated_total_tokens is defined else '-')|format_number if (req.total_tokens is defined or req.estimated_total_tokens is defined) else '-' }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="pagination">
+                    <button id="prev-page" disabled><i class="fas fa-chevron-left"></i> 上一页</button>
+                    <span id="page-info">第 <span id="current-page">1</span> 页，共 <span id="total-pages">1</span> 页</span>
+                    <button id="next-page"><i class="fas fa-chevron-right"></i> 下一页</button>
+                </div>
+            </section>
+            
+            <footer class="main-footer">
+                <div class="footer-content">
+                    <div class="footer-logo">
+                        <h3>2API <span>统计面板</span></h3>
+                    </div>
+                    <div class="footer-info">
+                        <p>© 2025 2API 统计面板 | 版本 1.0.1</p>
+                        <p>数据每60秒自动刷新</p>
+                    </div>
+                </div>
+            </footer>
+        </div>
+    </div>
+    
+    <script src="{{ url_for('static', filename='js/scripts.js') }}"></script>
+</body>
+</html>

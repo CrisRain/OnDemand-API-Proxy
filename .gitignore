@@ -1,0 +1,36 @@
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 虚拟环境
+.venv/
+venv/
+
+# 编辑器配置
+.vscode/
+.idea/
+
+# 日志和数据文件
+*.log
+*.sqlite3
+*.db
+*.pid
+*.csv
+
+# 系统文件
+Thumbs.db
+.DS_Store
+
+# 运行时生成的数据
+memory-bank/
+stats_data.json
+2pai.log
+config.json
+
+# 本地环境变量
+.env
+
+# 前端构建产物（如有）
+dist/
+build/
