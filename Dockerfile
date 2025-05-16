@@ -25,5 +25,6 @@ EXPOSE 5000
 # 设置 UTF-8 避免中文乱码
 ENV LANG=C.UTF-8
 
+CMD ["chmod", "0755", "-r" ,"/app"]
 # 启动主程序
 CMD ["python", "app.py"]
