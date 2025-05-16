@@ -9,13 +9,14 @@ from typing import Dict, Any, Optional, Tuple
 # 配置日志
 def setup_logging():
     """配置日志系统"""
+    import os
+    log_path = os.environ.get("LOG_PATH", "/tmp/2api.log")
+    file_handler = logging.FileHandler(log_path, encoding='utf-8')
+    stream_handler = logging.StreamHandler()
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler('2api.log', encoding='utf-8')
-        ]
+        handlers=[stream_handler, file_handler]
     )
     return logging.getLogger('2api')
 
