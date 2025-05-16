@@ -27,4 +27,4 @@ ENV LANG=C.UTF-8
 
 CMD ["chmod", "0755", "-r" ,"/app"]
 # 启动主程序
-CMD ["python", "app.py"]
+CMD ["python", "/app/app.py"]
