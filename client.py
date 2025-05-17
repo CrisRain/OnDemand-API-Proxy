@@ -35,6 +35,11 @@ class OnDemandAPIClient:
         self.last_error: Optional[str] = None
         self.last_activity = datetime.now()
         self.lock = threading.RLock()  # 可重入锁，用于线程安全操作
+
+        # 新增属性
+        self._associated_user_identifier: Optional[str] = None
+        self._associated_request_ip: Optional[str] = None
+        self._current_request_context_hash: Optional[str] = None # 新增：用于暂存当前请求的上下文哈希
         
         # 隐藏密码的日志
         masked_email = mask_email(email)
@@ -89,7 +94,7 @@ class OnDemandAPIClient:
         return response
     
     @with_retry()
-    def sign_in(self) -> bool:
+    def sign_in(self, context: Optional[str] = None) -> bool:
         """登录以获取 token, refreshToken, userId, 和 companyId"""
         with self.lock:  # 线程安全
             self.last_error = None
@@ -102,6 +107,8 @@ class OnDemandAPIClient:
                 'Authorization': f"Basic {self.get_authorization()}",  # 登录时使用 Basic 认证
                 'Referer': "https://app.on-demand.io/"
             }
+            if context:
+                self._current_request_context_hash = context
             
             try:
                 masked_email = mask_email(self.email)
@@ -217,17 +224,20 @@ class OnDemandAPIClient:
                 return False
 
     @with_retry()
-    def create_session(self, external_user_id: str = "openai-adapter-user") -> bool:
+    def create_session(self, external_user_id: str = "openai-adapter-user", external_context: Optional[str] = None) -> bool:
         """为聊天创建一个新会话
         
         Args:
             external_user_id: 外部用户ID前缀，会附加UUID确保唯一性
+            external_context: 外部上下文哈希 (可选)
             
         Returns:
             bool: 创建成功返回True，否则返回False
         """
         with self.lock:  # 线程安全
             self.last_error = None
+            if external_context:
+                self._current_request_context_hash = external_context
             if not self.token or not self.user_id or not self.company_id:
                 self.last_error = "创建会话缺少 token, user_id, 或 company_id。正在尝试登录。"
                 self._log(self.last_error, level="WARNING")
@@ -304,11 +314,12 @@ class OnDemandAPIClient:
 
     @with_retry()
     def send_query(self, query: str, endpoint_id: str = "predefined-claude-3.7-sonnet",
-                  stream: bool = False, model_configs_input: Optional[Dict] = None) -> Dict:
+                  stream: bool = False, model_configs_input: Optional[Dict] = None,
+                  full_query_override: Optional[str] = None) -> Dict:
         """向聊天会话发送查询，并处理流式或非流式响应
         
         Args:
-            query: 查询文本
+            query: 查询文本 (如果提供了 full_query_override，则此参数被忽略)
             endpoint_id: OnDemand端点ID
             stream: 是否使用流式响应
             model_configs_input: 模型配置参数，如temperature、maxTokens等
@@ -345,9 +356,14 @@ class OnDemandAPIClient:
             else:
                 current_query = query
 
+            # 优先使用 full_query_override
+            query_to_send = full_query_override if full_query_override is not None else current_query
+            if full_query_override is not None:
+                self._log(f"使用 full_query_override (长度: {len(full_query_override)}) 代替原始 query。", "DEBUG")
+
             payload = {
                 "endpointId": endpoint_id,
-                "query": current_query, # 使用处理后的 query
+                "query": query_to_send, # 使用处理后的 query 或 override
                 "pluginIds": [],
                 "responseMode": "stream" if stream else "sync",
                 "debugMode": "on" if config.get_config_value('debug_mode') else "off",

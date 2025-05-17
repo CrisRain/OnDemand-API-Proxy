@@ -13,6 +13,7 @@ class Config:
     
     # 默认配置值
     _defaults = {
+        "ondemand_session_timeout_minutes": 30,  # OnDemand 会话的活跃超时时间（分钟）
         "session_timeout_minutes": 3600,  # 会话不活动超时时间（分钟）- 增加以减少创建新会话的频率
         "max_retries": 5,  # 默认重试次数 - 增加以处理更多错误
         "retry_delay": 3,  # 默认重试延迟（秒）- 增加以减少请求频率
@@ -146,6 +147,7 @@ class Config:
         
         # 从环境变量加载其他设置
         env_mappings = {
+            "ondemand_session_timeout_minutes": "ONDEMAND_SESSION_TIMEOUT_MINUTES",
             "session_timeout_minutes": "SESSION_TIMEOUT_MINUTES",
             "max_retries": "MAX_RETRIES",
             "retry_delay": "RETRY_DELAY",

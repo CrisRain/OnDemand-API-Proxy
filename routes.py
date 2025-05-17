@@ -226,6 +226,13 @@ def _update_client_context_hash_after_reply(
                 session_data_to_update = config_inst.client_sessions[user_identifier][email_for_stats]
                 client_in_session = session_data_to_update.get("client")
 
+                # DEBUGGING LOGS START
+                logger_instance.debug(f"[{request_id}] HASH_UPDATE_DEBUG: client_in_session id={id(client_in_session)}, email={getattr(client_in_session, 'email', 'N/A')}, session_id={getattr(client_in_session, 'session_id', 'N/A')}")
+                logger_instance.debug(f"[{request_id}] HASH_UPDATE_DEBUG: current_ondemand_client_instance id={id(current_ondemand_client_instance)}, email={getattr(current_ondemand_client_instance, 'email', 'N/A')}, session_id={getattr(current_ondemand_client_instance, 'session_id', 'N/A')}")
+                logger_instance.debug(f"[{request_id}] HASH_UPDATE_DEBUG: Comparison result (client_in_session == current_ondemand_client_instance): {client_in_session == current_ondemand_client_instance}")
+                logger_instance.debug(f"[{request_id}] HASH_UPDATE_DEBUG: Comparison result (client_in_session is current_ondemand_client_instance): {client_in_session is current_ondemand_client_instance}")
+                # DEBUGGING LOGS END
+
                 if client_in_session == current_ondemand_client_instance:
                     old_hash = session_data_to_update.get("active_context_hash")
                     session_data_to_update["active_context_hash"] = next_active_context_hash
@@ -305,8 +312,12 @@ def register_routes(app):
     def chat_completions():
         """处理聊天补全请求，兼容 OpenAI 格式。"""
         request_id = generate_request_id()  # 生成唯一的请求 ID
+        logger.info(f"[{request_id}] CHAT_COMPLETIONS_ENTRY_POINT") # 最早的日志点
         client_ip = request.remote_addr  # 获取客户端 IP 地址，仅用于日志记录
         logger.info(f"[{request_id}] 收到来自 IP: {client_ip} 的 /v1/chat/completions 请求")
+
+        # 尝试在更早的位置打印一些调试信息
+        logger.info(f"[{request_id}] DEBUG_ENTRY: 进入 chat_completions。")
         
         # 验证访问令牌
         auth_header = request.headers.get('Authorization')
@@ -361,17 +372,42 @@ def register_routes(app):
         # --- 上下文感知会话管理与查询构建 (v2) ---
 
         # 1. 提取消息组件与上下文密钥
+        logger.info(f"[{request_id}] DEBUG_PRE_HASH_COMPUTATION: 即将计算 request_context_hash。")
         request_context_hash = _get_context_key_from_messages(messages, request_id)
-        logger.info(f"[{request_id}] 请求上下文哈希值: {request_context_hash}")
+        logger.info(f"[{request_id}] 请求上下文哈希值: {repr(request_context_hash)}") # 使用 repr()
 
-        historical_messages = [] # 末次用户消息前的消息，用于新上下文的密钥及查询构建
-        if request_context_hash:
+        logger.info(f"[{request_id}] DEBUG_POINT_A: 即将初始化 historical_messages。")
+        historical_messages = []
+        logger.info(f"[{request_id}] DEBUG_POINT_B: historical_messages 初始化为空列表。即将检查 request_context_hash ({repr(request_context_hash)}).")
+
+        if request_context_hash: # 注意：空字符串的布尔值为 False
+            logger.info(f"[{request_id}] DEBUG_POINT_C: request_context_hash ({repr(request_context_hash)}) 为真，进入历史提取块。")
             last_user_idx = -1
-            for i in range(len(messages) - 1, -1, -1):
-                if messages[i].get('role') == 'user': last_user_idx = i; break
-            # 此检查逻辑应与 _get_context_key_from_messages 中 historical_messages 的形成逻辑一致
-            if last_user_idx > 0: historical_messages = messages[:last_user_idx]
+            try:
+                for i in range(len(messages) - 1, -1, -1):
+                    if messages[i].get('role') == 'user': last_user_idx = i; break
+            except Exception as e_loop:
+                logger.error(f"[{request_id}] DEBUG_LOOP_ERROR: 在查找 last_user_idx 的循环中发生错误: {e_loop}")
+                last_user_idx = -1 # 确保安全
+
+            logger.info(f"[{request_id}] DEBUG_POINT_D: last_user_idx = {last_user_idx}")
+            if last_user_idx > 0:
+                try:
+                    historical_messages = messages[:last_user_idx]
+                    logger.info(f"[{request_id}] DEBUG_POINT_E: historical_messages 赋值自 messages[:{last_user_idx}]")
+                except Exception as e_slice:
+                    logger.error(f"[{request_id}] DEBUG_SLICE_ERROR: 在切片 messages[:{last_user_idx}] 时发生错误: {e_slice}")
+                    historical_messages = [] # 确保安全
+            
+            if historical_messages:
+                logger.info(f"[{request_id}] DEBUG_HISTORICAL_CONTENT: 'historical_messages' 提取后内容: {json.dumps(historical_messages, ensure_ascii=False, indent=2)}")
+            else:
+                logger.info(f"[{request_id}] DEBUG_HISTORICAL_EMPTY: 'historical_messages' 提取后为空列表。last_user_idx={last_user_idx}, request_context_hash='{request_context_hash}'")
         
+        elif not request_context_hash: # request_context_hash is None or empty string
+             logger.info(f"[{request_id}] DEBUG_HISTORICAL_NOHASH: 'request_context_hash' ({repr(request_context_hash)}) 为假, 'historical_messages' 保持为空列表。")
+
+        logger.info(f"[{request_id}] DEBUG_POST_HISTORICAL_EXTRACTION: 即将提取 system 和 user query。")
         current_system_prompts_contents = [msg['content'] for msg in messages if msg.get('role') == 'system' and msg.get('content')]
         system_prompt_combined = "\n".join(current_system_prompts_contents)
         
@@ -389,77 +425,115 @@ def register_routes(app):
         request_start_time = time.time()
         ondemand_client = None
         email_for_stats = None # 此为 OnDemandAPIClient 所用账户的邮箱
-        is_newly_assigned_context = False # 若选定客户端首次处理此 context_hash 则为 True
- 
+        # 初始化 is_newly_assigned_context，默认为 True，如果后续阶段匹配成功会被修改
+        is_newly_assigned_context = True
+        
+        # 获取会话超时配置
+        ondemand_session_timeout_minutes = config_instance.get('ondemand_session_timeout_minutes', 30)
+        logger.info(f"[{request_id}] OnDemand 会话超时设置为: {ondemand_session_timeout_minutes} 分钟。")
+        # 将分钟转换为 timedelta 对象，便于比较
+        session_timeout_delta = timedelta(minutes=ondemand_session_timeout_minutes)
+
         with config_instance.client_sessions_lock:
-            current_time = datetime.now()
+            current_time_dt = datetime.now() # 使用 datetime 对象进行比较
             if user_identifier not in config_instance.client_sessions:
                 config_instance.client_sessions[user_identifier] = {}
             user_sessions_for_id = config_instance.client_sessions[user_identifier]
 
-            # 阶段 1: 查找已服务此 context_hash 的客户端
-            if request_context_hash: # 仅当历史记录中存在有效上下文哈希时才尝试匹配
-                for acc_email_p1, session_data_p1 in user_sessions_for_id.items():
+            # 阶段 0: 优先复用“活跃”会话
+            # 遍历时按 last_time 降序排列，优先选择最近使用的活跃会话
+            sorted_sessions = sorted(
+                user_sessions_for_id.items(),
+                key=lambda item: item[1].get("last_time", datetime.min),
+                reverse=True
+            )
+
+            for acc_email_p0, session_data_p0 in sorted_sessions:
+                client_p0 = session_data_p0.get("client")
+                last_time_p0 = session_data_p0.get("last_time")
+
+                if client_p0 and client_p0.token and client_p0.session_id and last_time_p0:
+                    if (current_time_dt - last_time_p0) < session_timeout_delta: # 使用 session_timeout_delta
+                        ondemand_client = client_p0
+                        email_for_stats = acc_email_p0
+                        ondemand_client._associated_user_identifier = user_identifier
+                        ondemand_client._associated_request_ip = client_ip
+                        session_data_p0["last_time"] = current_time_dt # 使用 current_time_dt
+                        session_data_p0["ip"] = client_ip
+                        is_newly_assigned_context = False # 复用现有活跃会话
+                        stored_active_hash = session_data_p0.get("active_context_hash")
+                        hash_match_status = "匹配" if stored_active_hash == request_context_hash else "不匹配"
+                        logger.info(f"[{request_id}] 阶段0: 复用账户 {email_for_stats} 的活跃会话。请求上下文哈希 ({request_context_hash or 'None'}) 与存储哈希 ({stored_active_hash or 'None'}) {hash_match_status}。")
+                        break # 已找到活跃客户端
+
+            # 阶段 1: 若阶段0失败，则查找已服务此 context_hash 的客户端 (精确哈希匹配)
+            if not ondemand_client and request_context_hash: # 只有在 request_context_hash 存在时才进行阶段1匹配
+                for acc_email_p1, session_data_p1 in user_sessions_for_id.items(): # 无需再次排序，因为阶段0已处理最优选择
                     client_p1 = session_data_p1.get("client")
-                    # 基本客户端有效性检查
                     if client_p1 and client_p1.token and client_p1.session_id and \
                        session_data_p1.get("active_context_hash") == request_context_hash:
                         
+                        # 检查此精确匹配的会话是否也“活跃”，如果不活跃，可能不如创建一个新的
+                        last_time_p1 = session_data_p1.get("last_time")
+                        if last_time_p1 and (current_time_dt - last_time_p1) >= session_timeout_delta: # 使用 session_timeout_delta
+                            logger.info(f"[{request_id}] 阶段1: 找到精确哈希匹配的账户 {acc_email_p1}，但其会话已超时。将跳过并尝试创建新会话。")
+                            continue # 跳过这个超时的精确匹配
+
                         ondemand_client = client_p1
                         email_for_stats = acc_email_p1
-                        session_data_p1["last_time"] = current_time
-                        session_data_p1["ip"] = client_ip # Update IP as well
-                        is_newly_assigned_context = False # 关键：此上下文已由此客户端服务
-                        logger.info(f"[{request_id}] 上下文精确匹配。复用账户 {email_for_stats} 的客户端 (上下文哈希: {request_context_hash})。")
+                        ondemand_client._associated_user_identifier = user_identifier
+                        ondemand_client._associated_request_ip = client_ip
+                        session_data_p1["last_time"] = current_time_dt # 使用 current_time_dt
+                        session_data_p1["ip"] = client_ip
+                        is_newly_assigned_context = False # 精确上下文匹配
+                        logger.info(f"[{request_id}] 阶段1: 上下文精确匹配。复用账户 {email_for_stats} 的客户端 (上下文哈希: {request_context_hash})。")
                         break # 已找到客户端
             
-            # 阶段 2: 若无精确上下文匹配，则必须创建新客户端
+            # 阶段 2: 若阶段0和阶段1均失败，则必须创建新客户端会话
             if not ondemand_client:
-                logger.info(f"[{request_id}] 未找到精确上下文匹配 (上下文哈希: {request_context_hash or 'None'})。尝试获取/创建新客户端会话。")
-                # 原重分配逻辑已移除，直接进入创建新客户端流程
-                
-                # 无现有客户端可重分配，须获取新账户或创建会话 (此处的逻辑现在是主要路径)
-                # logger.info(f"[{request_id}] 无可重分配的客户端。尝试获取/创建新客户端会话。") # 此日志可移除或调整
-                MAX_ACCOUNT_ATTEMPTS = 3 # 应为配置值
+                logger.info(f"[{request_id}] 阶段0及阶段1均未找到可复用会话 (请求上下文哈希: {request_context_hash or 'None'})。尝试获取/创建新客户端会话。")
+                MAX_ACCOUNT_ATTEMPTS = config_instance.get('max_account_attempts', 3) # 从配置获取或默认3
                 for attempt in range(MAX_ACCOUNT_ATTEMPTS):
                         new_ondemand_email, new_ondemand_password = config.get_next_ondemand_account_details()
                         if not new_ondemand_email:
                             logger.error(f"[{request_id}] 尝试 {attempt+1} 次后，配置中无可用 OnDemand 账户。")
-                            # 若所有尝试失败，则在循环外处理错误响应
                             break
 
                         email_for_stats = new_ondemand_email # 本次尝试暂设值
                         
-                        # 检查 user_identifier 是否已对 new_ondemand_email 存在会话
-                        # 若 get_next_ondemand_account_details 在小账户池循环，可能发生此情况
-                        if new_ondemand_email in user_sessions_for_id:
-                            existing_session_data_for_new_email = user_sessions_for_id[new_ondemand_email]
-                            ondemand_client = existing_session_data_for_new_email["client"]
-                            logger.info(f"[{request_id}] 账户 {new_ondemand_email} 已关联用户。尝试为新上下文重验证/分配 (尝试 {attempt+1})。")
-                            # 确保有效后分配上下文
-                            if not ondemand_client.token or not ondemand_client.session_id:
-                                if not ondemand_client.sign_in() or not ondemand_client.create_session():
-                                    logger.warning(f"[{request_id}] 为 {new_ondemand_email} 重验证会话失败: {ondemand_client.last_error}")
-                                    ondemand_client = None; email_for_stats = None; continue # 尝试下一账户
-                        else: # user_identifier 的全新账户，创建客户端
-                            logger.info(f"[{request_id}] 为新账户 {new_ondemand_email} 创建新客户端 (尝试 {attempt+1})。")
-                            client_id_for_log = f"{client_ip}-{new_ondemand_email.split('@')[0]}"
-                            ondemand_client = OnDemandAPIClient(new_ondemand_email, new_ondemand_password, client_id=client_id_for_log)
-                            if not ondemand_client.sign_in() or not ondemand_client.create_session():
-                                logger.error(f"[{request_id}] 为 {new_ondemand_email} 初始化新客户端失败: {ondemand_client.last_error}")
-                                ondemand_client = None; email_for_stats = None; continue # Try next account
+                        # 检查 user_identifier 是否已对 new_ondemand_email 存在会话数据，但可能 client 实例需要重建
+                        # 或者这是一个全新的账户分配给此 user_identifier
                         
-                        # 若客户端成功获取/验证
+                        # 总是尝试创建新的 OnDemandAPIClient 实例和新的 OnDemand session_id
+                        # 因为到这一步意味着我们没有找到合适的现有活跃会话来复用其 session_id
+                        logger.info(f"[{request_id}] 阶段2: 为账户 {new_ondemand_email} 创建新客户端实例和会话 (尝试 {attempt+1})。")
+                        client_id_for_log = f"{user_identifier[:8]}-{new_ondemand_email.split('@')[0]}-{request_id[:4]}" # 更具区分度的 client_id
+                        temp_ondemand_client = OnDemandAPIClient(new_ondemand_email, new_ondemand_password, client_id=client_id_for_log)
+                        
+                        if not temp_ondemand_client.sign_in() or not temp_ondemand_client.create_session():
+                            logger.error(f"[{request_id}] 为 {new_ondemand_email} 初始化新客户端会话失败: {temp_ondemand_client.last_error}")
+                            # 此处不将 ondemand_client 设为 None，因为 email_for_stats 需要在失败统计时使用
+                            # email_for_stats = None # 移除，以确保失败统计时有邮箱
+                            continue # 尝试下一账户
+                        
+                        ondemand_client = temp_ondemand_client # 成功创建，赋值
+                        ondemand_client._associated_user_identifier = user_identifier
+                        ondemand_client._associated_request_ip = client_ip
+                                                 
                         user_sessions_for_id[new_ondemand_email] = {
-                            "client": ondemand_client, "last_time": current_time, "ip": client_ip,
-                            "active_context_hash": request_context_hash # 分配至当前上下文
+                            "client": ondemand_client,
+                            "last_time": current_time_dt, # 使用 current_time_dt
+                            "ip": client_ip,
+                            "active_context_hash": request_context_hash # 新会话关联到当前请求的上下文哈希
                         }
-                        is_newly_assigned_context = True # 此客户端现服务于此(可能为新)上下文
-                        logger.info(f"[{request_id}] 已为上下文哈希 {request_context_hash} 成功设置客户端 (账户: {email_for_stats})。")
+                        is_newly_assigned_context = True # 这是一个新的 OnDemand 会话，或者为现有账户分配了新的上下文
+                        logger.info(f"[{request_id}] 阶段2: 已为账户 {email_for_stats} 成功创建/分配新客户端会话 (is_newly_assigned_context=True, 关联上下文哈希: {request_context_hash or 'None'})。")
                         break # 跳出账户尝试循环，客户端就绪
                 
                 if not ondemand_client: # 获取/创建客户端尝试均失败
-                    logger.error(f"[{request_id}] 尝试 {MAX_ACCOUNT_ATTEMPTS} 次后获取/创建客户端失败。")
+                    # is_newly_assigned_context 此时应保持为 True (其默认值)
+                    logger.error(f"[{request_id}] 尝试 {MAX_ACCOUNT_ATTEMPTS} 次后获取/创建客户端失败 (is_newly_assigned_context 保持为 {is_newly_assigned_context})。")
+                    # email_for_stats 此时应为最后一次尝试的邮箱，或在循环开始前为None
                     prompt_tok_val_err, _, _ = count_message_tokens(messages, requested_model_name)
                     _update_usage_statistics(
                         config_inst=config_instance, request_id=request_id, requested_model_name=requested_model_name,
@@ -473,42 +547,72 @@ def register_routes(app):
 
         # --- 会话管理结束 ---
 
-        # 4. 基于上下文分配构建 final_query_to_ondemand
+        # 4. 基于 is_newly_assigned_context 构建 final_query_to_ondemand
         final_query_to_ondemand = ""
         query_parts = []
 
-        if is_newly_assigned_context and request_context_hash: # 若为新上下文且有历史，则发送历史记录
-            logger.info(f"[{request_id}] 客户端 (账户: {email_for_stats}) 新分配至上下文 '{request_context_hash}'。使用历史消息构建查询。")
-            # historical_messages 已在开始时提取
-            formatted_historical_parts = []
-            for msg in historical_messages:
-                role = msg.get('role', 'unknown').capitalize()
-                content = msg.get('content', '')
-                if content: formatted_historical_parts.append(f"{role}: {content}")
-            
-            if formatted_historical_parts: query_parts.append("\n".join(formatted_historical_parts))
-        elif not request_context_hash: # 无历史记录，某种意义上是“新”的，但无过往内容可发送
-             logger.info(f"[{request_id}] 此请求无历史上下文哈希。客户端 (账户: {email_for_stats})。")
-        else: # 非 newly_assigned_context 且 request_context_hash 存在 (找到精确匹配)
-            logger.info(f"[{request_id}] 客户端 (账户: {email_for_stats}) 已服务上下文 '{request_context_hash}'。仅用当前消息构建查询。")
+        # 在构建查询之前，记录关键变量的状态
+        logger.debug(f"[{request_id}] 查询构建前状态：is_newly_assigned_context={is_newly_assigned_context}, request_context_hash='{request_context_hash}', historical_messages_empty={not bool(historical_messages)}")
+        if historical_messages: # 只在列表非空时尝试序列化
+            logger.debug(f"[{request_id}] 查询构建前状态：historical_messages 内容: {json.dumps(historical_messages, ensure_ascii=False, indent=2)}")
+        else:
+            logger.debug(f"[{request_id}] 查询构建前状态：historical_messages 为空列表。")
+
+        if is_newly_assigned_context:
+            # 阶段2：新建/重分配会话
+            logger.info(f"[{request_id}] 查询构建：会话为新建/重分配 (is_newly_assigned_context=True, 账户: {email_for_stats})。")
+            if request_context_hash and historical_messages: # 有历史上下文 (historical_messages 已在前面提取)
+                logger.info(f"[{request_id}] 查询构建：存在历史上下文 ({request_context_hash})，将发送历史消息。")
+                # logger.debug(f"[{request_id}] 查询构建：准备发送的历史消息内容: {json.dumps(historical_messages, ensure_ascii=False, indent=2)}") # 这条日志现在由上面的日志覆盖
+                formatted_historical_parts = []
+                for msg in historical_messages: # historical_messages 是 messages[:last_user_idx]
+                    role = msg.get('role', 'unknown').capitalize()
+                    content = msg.get('content', '')
+                    if content: formatted_historical_parts.append(f"{role}: {content}")
+                if formatted_historical_parts: query_parts.append("\n".join(formatted_historical_parts))
+            else: # 无历史上下文 (例如对话首条消息，或 request_context_hash 为 None)
+                logger.info(f"[{request_id}] 查询构建：无历史上下文。仅发送系统提示（若有）和当前用户查询。")
+        else:
+            # 阶段0或阶段1：复用现有会话
+            # 不发送 historical_messages，信任 OnDemand API 通过 session_id 维护上下文
+            stored_active_hash = "N/A"
+            if ondemand_client: # ondemand_client 应该总是存在的，除非前面逻辑有误
+                 # 尝试从 client_sessions 获取最新的哈希，因为 client 实例可能刚被更新
+                client_session_data = config_instance.client_sessions.get(user_identifier, {}).get(email_for_stats, {})
+                stored_active_hash = client_session_data.get('active_context_hash', 'N/A')
+
+            hash_match_status = "匹配" if stored_active_hash == request_context_hash else "不匹配"
+            logger.info(f"[{request_id}] 查询构建：复用现有会话 (is_newly_assigned_context=False, 账户: {email_for_stats})。不发送历史消息。请求上下文哈希 ({request_context_hash or 'None'}) 与存储哈希 ({stored_active_hash or 'None'}) {hash_match_status}。")
 
         # 始终添加当前系统提示(若有)和用户查询
-        if system_prompt_combined: query_parts.append(f"System: {system_prompt_combined}")
-        if current_user_query:
+        if system_prompt_combined:
+            # query_parts.append(f"System: {system_prompt_combined}") # 旧格式
+            # 按照设计文档，system_prompt_combined 应该作为独立消息或与历史消息合并
+            # 如果 is_newly_assigned_context 为 True 且有历史，则历史消息已加入 query_parts
+            # 如果 is_newly_assigned_context 为 False，则不发送历史，仅发送 system + user
+            # 如果 is_newly_assigned_context 为 True 且无历史，则发送 system + user
+            # 这里的逻辑是，如果 system_prompt_combined 存在，它应该被包含。
+            # 如果 query_parts 已经因为 historical_messages 而有内容，则 system_prompt 会在其后。
+            # 如果 query_parts 为空，则 system_prompt 是第一个。
+            # 为了更清晰地模拟OpenAI的messages结构，我们应该确保system prompt（如果存在）在user query之前。
+            # 但当前实现是将所有部分连接成一个大字符串。
+            # 维持现有追加方式，但确保日志清晰。
+            query_parts.append(f"System: {system_prompt_combined}") # 保持现有追加方式，但注意其位置
+            logger.debug(f"[{request_id}] 查询构建：添加了合并的系统提示。")
+
+        if current_user_query: # current_user_query 是 messages 中最后一个用户消息的内容
             query_parts.append(f"User: {current_user_query}")
-        else: # 应在初始检查时捕获
+            logger.debug(f"[{request_id}] 查询构建：添加了当前用户查询。")
+        else: # 此情况应在早期被捕获 (messages 中无 user role)
             logger.error(f"[{request_id}] 严重错误: 最终查询构建时 current_user_query 为空！")
-            # 若初始检查稳健，理想情况下不应发生此情况。
-            # 若发生，则表明消息解析或逻辑流存在问题。
-            # 为安全起见，若 API 要求，确保查询非空。
-            if not query_parts: query_parts.append(" ") # 占位符
+            if not query_parts: query_parts.append(" ") # 确保查询非空
 
         final_query_to_ondemand = "\n\n".join(filter(None, query_parts))
-        if not final_query_to_ondemand.strip():
+        if not final_query_to_ondemand.strip(): # 确保查询字符串实际有内容
             logger.warning(f"[{request_id}] 构建的查询为空或全为空格。发送占位符查询。")
-            final_query_to_ondemand = " " # 安全占位符，以防 OnDemand API 要求非空。
+            final_query_to_ondemand = " "
         
-        logger.info(f"[{request_id}] 构建的 OnDemand 查询 : {final_query_to_ondemand[:1000]}...")
+        logger.info(f"[{request_id}] 构建的 OnDemand 查询 (前1000字符): {final_query_to_ondemand[:1000]}...")
 
         # 根据请求的模型名称获取 on-demand.io 的 endpoint_id
         endpoint_id = model_mapping.get(requested_model_name, default_endpoint_id)
@@ -534,6 +638,16 @@ def register_routes(app):
  
         # request_start_time 已移至会话管理之前
         
+        # 在调用 send_query 之前，将 request_context_hash 存储到 ondemand_client 实例上
+        # 以便在 RateLimitStrategy 中进行账户切换时可以访问到它
+        if ondemand_client: #确保 ondemand_client 不是 None
+            ondemand_client._current_request_context_hash = request_context_hash
+            logger.debug(f"[{request_id}] Stored request_context_hash ('{request_context_hash}') onto ondemand_client instance before send_query.")
+        else:
+            logger.error(f"[{request_id}] CRITICAL: ondemand_client is None before send_query. This should not happen.")
+            # 可以在这里决定是否提前返回错误，或者让后续的 send_query 调用失败
+            # 为安全起见，如果 ondemand_client 为 None，后续调用会 AttributeError
+
         # 使用特定于此 IP 的客户端实例向 OnDemand API 发送查询
         ondemand_result = ondemand_client.send_query(final_query_to_ondemand, endpoint_id=endpoint_id,
                                                      stream=stream_requested, model_configs_input=model_configs)
@@ -677,7 +791,7 @@ def register_routes(app):
                         config_inst=config_instance,
                         request_id=request_id,
                         requested_model_name=requested_model_name,
-                        account_email=email_for_stats,
+                        account_email=ondemand_client.email,
                         is_success=True,
                         duration_ms=request_duration_val,
                         is_stream=True,
@@ -694,7 +808,7 @@ def register_routes(app):
                         assistant_reply_content=full_streamed_reply,
                         request_id=request_id,
                         user_identifier=token, # user_identifier is token
-                        email_for_stats=email_for_stats,
+                        email_for_stats=ondemand_client.email, # <--- 使用 ondemand_client 当前的 email
                         current_ondemand_client_instance=ondemand_client,
                         config_inst=config_instance,
                         logger_instance=logger
@@ -733,7 +847,7 @@ def register_routes(app):
                         config_inst=config_instance,
                         request_id=request_id,
                         requested_model_name=requested_model_name,
-                        account_email=email_for_stats, # email_for_stats 可能为 None
+                        account_email=ondemand_client.email if ondemand_client else email_for_stats,
                         is_success=False,
                         duration_ms=request_duration_val,
                         is_stream=True,
@@ -785,7 +899,7 @@ def register_routes(app):
                 config_inst=config_instance,
                 request_id=request_id,
                 requested_model_name=requested_model_name,
-                account_email=email_for_stats,
+                account_email=ondemand_client.email,
                 is_success=True,
                 duration_ms=request_duration_val,
                 is_stream=False,
@@ -803,7 +917,7 @@ def register_routes(app):
                 assistant_reply_content=final_content,
                 request_id=request_id,
                 user_identifier=token, # user_identifier is token
-                email_for_stats=email_for_stats,
+                email_for_stats=ondemand_client.email, # <--- 使用 ondemand_client 当前的 email
                 current_ondemand_client_instance=ondemand_client,
                 config_inst=config_instance,
                 logger_instance=logger
