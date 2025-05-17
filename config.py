@@ -4,7 +4,7 @@ import time
 from collections import defaultdict
 import threading
 from typing import Dict, List, Any, Optional, Union, get_type_hints
-from datetime import datetime
+from datetime import datetime, timedelta
 from utils import logger, load_config
 
 
@@ -13,12 +13,13 @@ class Config:
     
     # 默认配置值
     _defaults = {
-        "session_timeout_minutes": 30,  # 会话不活动超时时间（分钟）
-        "max_retries": 3,  # 默认重试次数
-        "retry_delay": 1,  # 默认重试延迟（秒）
-        "request_timeout": 30,  # 默认请求超时（秒）
-        "stream_timeout": 120,  # 流式请求的默认超时（秒）
-        "rate_limit": 60,  # 默认速率限制（每分钟请求数）
+        "session_timeout_minutes": 3600,  # 会话不活动超时时间（分钟）- 增加以减少创建新会话的频率
+        "max_retries": 5,  # 默认重试次数 - 增加以处理更多错误
+        "retry_delay": 3,  # 默认重试延迟（秒）- 增加以减少请求频率
+        "request_timeout": 45,  # 默认请求超时（秒）- 增加以允许更长的处理时间
+        "stream_timeout": 180,  # 流式请求的默认超时（秒）- 增加以允许更长的处理时间
+        "rate_limit": 30,  # 默认速率限制（每分钟请求数）- 减少以避免触发API速率限制
+        "account_cooldown_seconds": 300,  # 账户冷却期（秒）- 在遇到429错误后暂时不使用该账户
         "debug_mode": False,  # 调试模式
         "api_access_token": "sk-2api-ondemand-access-token-2025",  # API访问认证Token
         "stats_file_path": "stats_data.json",  # 统计数据文件路径
@@ -82,11 +83,16 @@ class Config:
         self.current_account_index = 0
         
         # 内存中存储每个客户端的会话和最后交互时间
-        # 格式: {客户端标识符: {"client": OnDemandAPIClient实例, "last_time": datetime对象}}
+        # 格式: {用户标识符: {账户邮箱: {"client": OnDemandAPIClient实例, "last_time": datetime对象}}}
+        # 这样确保不同用户的会话是隔离的，每个用户只能访问自己的会话
         self.client_sessions = {}
         
         # 账户信息
         self.accounts = []
+        
+        # 账户冷却期记录 - 存储因速率限制而暂时不使用的账户
+        # 格式: {账户邮箱: 冷却期结束时间(datetime对象)}
+        self.account_cooldowns = {}
     
     def get(self, key: str, default: Any = None) -> Any:
         """获取配置值"""
@@ -104,9 +110,10 @@ class Config:
         """获取模型对应的端点ID"""
         return self._model_mapping.get(model_name, self.get("default_endpoint_id"))
     
-    def load_from_file(self, file_path: Optional[str] = None) -> bool:
+    def load_from_file(self) -> bool:
         """从配置文件加载配置"""
         try:
+            # utils.load_config() 当前不接受 file_path 参数，因此移除
             config_data = load_config()
             if config_data:
                 # 更新配置
@@ -296,50 +303,94 @@ class Config:
         self.start_stats_save_thread()
 
     def get_next_ondemand_account_details(self):
-        """获取下一个 OnDemand 账户的邮箱和密码，用于轮询。"""
+        """获取下一个 OnDemand 账户的邮箱和密码，用于轮询。
+        会跳过处于冷却期的账户。"""
         with self.account_index_lock:
-            account_details = self.accounts[self.current_account_index]
-            self.current_account_index = (self.current_account_index + 1) % len(self.accounts)  # 轮询到下一个账户
-            print(f"[系统] 新会话将使用账户: {account_details.get('email')}")
+            current_time = datetime.now()
+            
+            # 清理过期的冷却记录
+            expired_cooldowns = [email for email, end_time in self.account_cooldowns.items()
+                               if end_time < current_time]
+            for email in expired_cooldowns:
+                del self.account_cooldowns[email]
+                logger.info(f"账户 {email} 的冷却期已结束，现在可用")
+            
+            # 尝试最多len(self.accounts)次，以找到一个不在冷却期的账户
+            for _ in range(len(self.accounts)):
+                account_details = self.accounts[self.current_account_index]
+                email = account_details.get('email')
+                
+                # 更新索引到下一个账户，为下次调用做准备
+                self.current_account_index = (self.current_account_index + 1) % len(self.accounts)
+                
+                # 检查账户是否在冷却期
+                if email in self.account_cooldowns:
+                    cooldown_end = self.account_cooldowns[email]
+                    remaining_seconds = (cooldown_end - current_time).total_seconds()
+                    logger.warning(f"账户 {email} 仍在冷却期中，还剩 {remaining_seconds:.1f} 秒")
+                    continue  # 尝试下一个账户
+                
+                # 找到一个可用账户
+                logger.info(f"[系统] 新会话将使用账户: {email}")
+                return email, account_details.get('password')
+            
+            # 如果所有账户都在冷却期，使用第一个账户（即使它在冷却期）
+            logger.warning("所有账户都在冷却期！使用第一个账户，尽管它可能会触发速率限制")
+            account_details = self.accounts[0]
             return account_details.get('email'), account_details.get('password')
 
 
 # 创建全局配置实例
 config_instance = Config()
 
-
 def init_config():
     """初始化配置的兼容函数，用于向后兼容"""
     config_instance.init()
 
 
-def get_config_value(name: str):
+def get_config_value(name: str, default: Any = None) -> Any:
     """
-    获取当前配置变量的最新值，避免直接访问配置变量导致的问题。
+    获取当前配置变量的最新值。
     推荐外部通过 config.get_config_value('变量名') 获取配置。
+    对于 accounts, model_mapping, usage_stats, client_sessions，请使用新增的专用getter函数。
     """
-    # 先尝试从配置实例获取
-    value = config_instance.get(name)
-    if value is not None:
-        return value
-    
-    # 如果是特殊属性，单独处理
-    if name == "ACCOUNTS":
-        return config_instance.accounts
-    elif name == "MODEL_MAPPING":
-        return config_instance._model_mapping
-    elif name == "USAGE_STATS":
-        return config_instance.usage_stats
-    elif name == "CLIENT_SESSIONS":
-        return config_instance.client_sessions
-    
-    # 返回None表示未找到
-    return None
+    return config_instance.get(name, default)
 
+# 新增的类型安全的getter函数
+def get_accounts() -> List[Dict[str, str]]:
+    """获取账户信息列表"""
+    return config_instance.accounts
+
+def get_model_mapping() -> Dict[str, str]:
+    """获取模型名称到端点ID的映射"""
+    return config_instance._model_mapping
+
+def get_usage_stats() -> Dict[str, Any]:
+    """获取用量统计数据"""
+    return config_instance.usage_stats
+
+def get_client_sessions() -> Dict[str, Any]:
+    """获取客户端会话信息"""
+    return config_instance.client_sessions
 
 def get_next_ondemand_account_details():
     """获取下一个账户的兼容函数"""
     return config_instance.get_next_ondemand_account_details()
+
+def set_account_cooldown(email, cooldown_seconds=None):
+    """设置账户冷却期
+    
+    Args:
+        email: 账户邮箱
+        cooldown_seconds: 冷却时间（秒），如果为None则使用默认配置
+    """
+    if cooldown_seconds is None:
+        cooldown_seconds = config_instance.get('account_cooldown_seconds')
+    
+    cooldown_end = datetime.now() + timedelta(seconds=cooldown_seconds)
+    with config_instance.account_index_lock:  # 使用相同的锁保护冷却期字典
+        config_instance.account_cooldowns[email] = cooldown_end
+        logger.warning(f"账户 {email} 已设置冷却期 {cooldown_seconds} 秒，将于 {cooldown_end.strftime('%Y-%m-%d %H:%M:%S')} 结束")
 
 
 # ⚠️ 警告：为保证配置动态更新，请勿使用 from config import XXX，只使用 import config 并通过 config.get_config_value('变量名') 获取配置。

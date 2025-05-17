@@ -9,13 +9,16 @@ from typing import Dict, Any, Optional, Tuple
 # 配置日志
 def setup_logging():
     """配置日志系统"""
-    import os
     log_path = os.environ.get("LOG_PATH", "/tmp/2api.log")
+    log_level_str = os.environ.get("LOG_LEVEL", "INFO").upper()
+    log_level = getattr(logging, log_level_str, logging.INFO)
+    log_format = os.environ.get("LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
     file_handler = logging.FileHandler(log_path, encoding='utf-8')
     stream_handler = logging.StreamHandler()
     logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=log_level,
+        format=log_format,
         handlers=[stream_handler, file_handler]
     )
     return logging.getLogger('2api')
@@ -24,7 +27,8 @@ logger = setup_logging()
 
 def load_config():
     """从 config.json 加载配置（如果存在），否则使用环境变量"""
-    CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+    default_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+    CONFIG_FILE = os.environ.get("CONFIG_FILE_PATH", default_config_path)
     config = {}
 
     if os.path.exists(CONFIG_FILE):
@@ -41,7 +45,7 @@ def load_config():
 def mask_email(email: str) -> str:
     """隐藏邮箱中间部分，保护隐私"""
     if not email or '@' not in email:
-        return "invalid-email"
+        return "无效邮箱"
     
     parts = email.split('@')
     username = parts[0]
@@ -106,32 +110,49 @@ def count_message_tokens(messages: list, model: str = "gpt-3.5-turbo") -> Tuple[
     Returns:
         Tuple[int, int, int]: (提示tokens数, 完成tokens数, 总tokens数)
     """
+    # 类型保护，防止messages为None或非列表类型
+    if messages is None:
+        messages = []
+    elif not isinstance(messages, list):
+        logger.warning(f"count_message_tokens 收到非列表类型的消息: {type(messages)}")
+        messages = []
+    
     prompt_tokens = 0
     completion_tokens = 0
     
-    # 计算提示tokens
-    for message in messages:
-        role = message.get('role', '')
-        content = message.get('content', '')
+    try:
+        # 计算提示tokens
+        for message in messages:
+            # 确保message是字典类型
+            if not isinstance(message, dict):
+                logger.warning(f"跳过非字典类型的消息: {type(message)}")
+                continue
+                
+            role = message.get('role', '')
+            content = message.get('content', '')
+            
+            if role and content:
+                # 每条消息的基本token开销
+                prompt_tokens += 4  # 每条消息的基本开销
+                
+                # 角色名称的token
+                prompt_tokens += 1  # 角色名称的开销
+                
+                # 内容的token
+                prompt_tokens += count_tokens(content, model)
+                
+                # 如果是assistant角色，计算完成tokens
+                if role == 'assistant':
+                    completion_tokens += count_tokens(content, model)
         
-        if role and content:
-            # 每条消息的基本token开销
-            prompt_tokens += 4  # 每条消息的基本开销
-            
-            # 角色名称的token
-            prompt_tokens += 1  # 角色名称的开销
-            
-            # 内容的token
-            prompt_tokens += count_tokens(content, model)
-            
-            # 如果是assistant角色，计算完成tokens
-            if role == 'assistant':
-                completion_tokens += count_tokens(content, model)
-    
-    # 消息结束的token
-    prompt_tokens += 2  # 消息结束的开销
-    
-    # 计算总tokens
-    total_tokens = prompt_tokens + completion_tokens
-    
-    return prompt_tokens, completion_tokens, total_tokens
+        # 消息结束的token
+        prompt_tokens += 2  # 消息结束的开销
+        
+        # 计算总tokens
+        total_tokens = prompt_tokens + completion_tokens
+        
+        return prompt_tokens, completion_tokens, total_tokens
+    except Exception as e:
+        logger.error(f"计算消息token数量时出错: {e}")
+        # 返回安全的默认值
+        return 0, 0, 0

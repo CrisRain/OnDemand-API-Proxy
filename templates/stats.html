@@ -57,9 +57,7 @@
                             <div class="stats-number">{{ stats.total_requests|format_number }}</div>
                             <div class="stats-trend positive">
                                 <i class="fas fa-arrow-up"></i>
-                                {% set today_requests = stats.daily_usage.get(current_time.split()[0], 0) %}
-                                {% set growth_rate = (today_requests / (stats.total_requests - today_requests) * 100) if (stats.total_requests - today_requests) > 0 else 100 %}
-                                {{ growth_rate|round(1) }}% 今日
+                                {{ stats.growth_rate|round(2) }}% 今日
                             </div>
                         </div>
                     </div>
@@ -70,7 +68,7 @@
                         </div>
                         <div class="stats-content">
                             <h3>成功率</h3>
-                            <div class="stats-number">{{ (stats.successful_requests / stats.total_requests * 100) if stats.total_requests > 0 else 0 | round(2) }}%</div>
+                            <div class="stats-number">{{ stats.success_rate }}%</div>
                             <div class="stats-detail">
                                 成功: {{ stats.successful_requests|format_number }} / 失败: {{ stats.failed_requests|format_number }}
                             </div>
@@ -84,14 +82,10 @@
                         <div class="stats-content">
                             <h3>平均响应时间</h3>
                             <div class="stats-number">
-                                {% set total_duration = 0 %}
-                                {% for req in stats.request_history if req.success %}
-                                    {% set total_duration = total_duration + req.duration_ms %}
-                                {% endfor %}
-                                {{ (total_duration / stats.successful_requests) if stats.successful_requests > 0 else 0 | round(0) }} <small>ms</small>
+                                {{ stats.avg_duration|format_duration }}
                             </div>
                             <div class="stats-detail">
-                                最快: {{ stats.request_history|selectattr('success')|map(attribute='duration_ms')|min|default(0)|int }} ms
+                                最快: {{ stats.min_duration|format_duration }}
                             </div>
                         </div>
                     </div>
@@ -116,13 +110,10 @@
                         <div class="stats-content">
                             <h3>估算成本</h3>
                             <div class="stats-number">
-                                {% set gpt4_cost = (stats.model_tokens.get('gpt-4.1', 0) * 0.00001) %}
-                                {% set claude_cost = (stats.model_tokens.get('claude-3.7-sonnet', 0) * 0.000008) %}
-                                {% set other_cost = ((stats.total_tokens - stats.model_tokens.get('gpt-4.1', 0) - stats.model_tokens.get('claude-3.7-sonnet', 0)) * 0.000005) %}
-                                ${{ (gpt4_cost + claude_cost + other_cost) | round(2) }}
+                                ${{ stats.total_cost | round(2) }}
                             </div>
                             <div class="stats-detail">
-                                平均: ${{ ((gpt4_cost + claude_cost + other_cost) / stats.total_requests) if stats.total_requests > 0 else 0 | round(4) }}/请求
+                                平均: ${{ stats.avg_cost | round(2) }}/请求
                             </div>
                         </div>
                     </div>
@@ -135,10 +126,8 @@
                             <h3>模型使用</h3>
                             <div class="stats-number">{{ stats.model_usage.keys()|list|length }}</div>
                             <div class="stats-detail">
-                                {% set top_models = stats.model_usage.items()|list|sort(reverse=true, attribute=1) %}
-                                {% if top_models %}
-                                    {% set top_model = top_models|first %}
-                                    最常用: {{ top_model[0] }} ({{ top_model[1] }}次)
+                                {% if stats.top_model %}
+                                    最常用: {{ stats.top_model[0] }} ({{ stats.top_model[1] }}次)
                                 {% else %}
                                     暂无模型使用数据
                                 {% endif %}
