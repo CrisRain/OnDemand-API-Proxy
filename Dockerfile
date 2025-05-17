@@ -21,7 +21,7 @@ COPY retry.py .
 COPY static/ static/
 COPY templates/ templates/
 
-RUN chmod 0755 -r /app
+RUN chmod -R 0755 /app
 
 # Expose the port (Flask 默认端口)
 EXPOSE 5000
