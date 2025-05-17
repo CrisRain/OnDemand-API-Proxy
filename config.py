@@ -40,7 +40,7 @@ class Config:
         "gpt-4.1-nano": "predefined-openai-gpt4.1-nano",
         "deepseek-v3": "predefined-deepseek-v3",
         "deepseek-r1": "predefined-deepseek-r1",
-        "claude-3.5-sonnet": "predefined-claude-3.7-sonnet",  # 假设 3.7 是最新的可用 Sonnet
+        "claude-3.5-sonnet": "predefined-claude-3.5-sonnet",
         "claude-3.7-sonnet": "predefined-claude-3.7-sonnet",
         "claude-3-opus": "predefined-claude-3-opus",
         "claude-3-haiku": "predefined-claude-3-haiku",

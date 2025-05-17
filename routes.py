@@ -527,8 +527,7 @@ def register_routes(app):
                 "account_usage": dict(config_instance.usage_stats["account_usage"]),
                 "daily_usage": dict(sorted(config_instance.usage_stats["daily_usage"].items(), reverse=True)[:30]),  # 最近30天
                 "hourly_usage": dict(sorted(config_instance.usage_stats["hourly_usage"].items(), reverse=True)[:48]),  # 最近48小时
-                "request_history": list(config_instance.usage_stats["request_history"][:50]),  # 最近50条记录
-                # Token统计
+                "request_history": list(config_instance.usage_stats["request_history"][:50]),
                 "total_prompt_tokens": config_instance.usage_stats["total_prompt_tokens"],
                 "total_completion_tokens": config_instance.usage_stats["total_completion_tokens"],
                 "total_tokens": config_instance.usage_stats["total_tokens"],

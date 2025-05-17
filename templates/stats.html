@@ -135,8 +135,13 @@
                             <h3>模型使用</h3>
                             <div class="stats-number">{{ stats.model_usage.keys()|list|length }}</div>
                             <div class="stats-detail">
-                                {% set top_model = stats.model_usage.items()|list|sort(reverse=true, attribute=1)|first %}
-                                最常用: {{ top_model[0] }} ({{ top_model[1] }}次)
+                                {% set top_models = stats.model_usage.items()|list|sort(reverse=true, attribute=1) %}
+                                {% if top_models %}
+                                    {% set top_model = top_models|first %}
+                                    最常用: {{ top_model[0] }} ({{ top_model[1] }}次)
+                                {% else %}
+                                    暂无模型使用数据
+                                {% endif %}
                             </div>
                         </div>
                     </div>
