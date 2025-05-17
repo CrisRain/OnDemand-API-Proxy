@@ -17,6 +17,7 @@ COPY client.py .
 COPY routes.py .
 COPY utils.py .
 COPY config.py .
+COPY retry.py .
 COPY static/ static/
 COPY templates/ templates/
 
