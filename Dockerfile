@@ -11,15 +11,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 复制核心应用文件
-COPY app.py .
-COPY auth.py .
-COPY client.py .
-COPY routes.py .
-COPY utils.py .
-COPY config.py .
-COPY retry.py .
-COPY static/ static/
-COPY templates/ templates/
+COPY /* .
 
 RUN chmod -R 0755 /app
 
