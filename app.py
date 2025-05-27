@@ -1,6 +1,5 @@
 import os
 from flask import Flask
-from utils import logger
 import config
 from auth import start_cleanup_thread
 from routes import register_routes

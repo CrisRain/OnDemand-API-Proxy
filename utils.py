@@ -1,46 +1,14 @@
-import logging
 import json
 import os
 import time
 import tiktoken
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
+from logging_config import logger
+from config import get_config_value  # 导入配置获取函数
+# from config import get_config_value # 导入配置获取函数 - 已移除循环导入
 
-# 配置日志
-def setup_logging():
-    """配置日志系统"""
-    log_path = os.environ.get("LOG_PATH", "/tmp/2api.log")
-    log_level_str = os.environ.get("LOG_LEVEL", "INFO").upper()
-    log_level = getattr(logging, log_level_str, logging.INFO)
-    log_format = os.environ.get("LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
-    file_handler = logging.FileHandler(log_path, encoding='utf-8')
-    stream_handler = logging.StreamHandler()
-    logging.basicConfig(
-        level=log_level,
-        format=log_format,
-        handlers=[stream_handler, file_handler]
-    )
-    return logging.getLogger('2api')
-
-logger = setup_logging()
-
-def load_config():
-    """从 config.json 加载配置（如果存在），否则使用环境变量"""
-    default_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
-    CONFIG_FILE = os.environ.get("CONFIG_FILE_PATH", default_config_path)
-    config = {}
-
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                logger.info(f"已从 {CONFIG_FILE} 加载配置")
-        except (json.JSONDecodeError, IOError) as e:
-            logger.error(f"加载配置文件失败: {e}")
-            config = {}
-    
-    return config
 
 def mask_email(email: str) -> str:
     """隐藏邮箱中间部分，保护隐私"""

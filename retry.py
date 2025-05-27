@@ -4,6 +4,7 @@ import functools
 import requests
 from abc import ABC, abstractmethod
 from typing import Callable, Any, Dict, Optional, Type, Union, TypeVar, cast
+from datetime import datetime # <--- 移动到这里
 
 # 导入配置模块
 import config
@@ -281,9 +282,6 @@ class RateLimitStrategy(RetryStrategy):
                                     #    这里我们主要关注 client 实例和 active_context_hash。
                                     #    如果 request_ip 在 self.client 中可用，则使用它，否则尝试保留已有的。
                                     ip_to_use = request_ip if request_ip else user_specific_sessions.get(new_email_in_strategy, {}).get("ip", "unknown_ip_in_retry_update")
-                                    
-                                    # 需要导入 datetime
-                                    from datetime import datetime
                                     
                                     # 从 client 实例获取原始请求的上下文哈希
                                     # 这个哈希应该由 routes.py 在调用 send_query 之前设置到 client 实例上

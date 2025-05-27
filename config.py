@@ -5,7 +5,8 @@ from collections import defaultdict
 import threading
 from typing import Dict, List, Any, Optional, Union, get_type_hints
 from datetime import datetime, timedelta
-from utils import logger, load_config
+from logging_config import logger
+from config_loader import load_config
 
 
 class Config:
@@ -19,10 +20,33 @@ class Config:
         "retry_delay": 3,  # 默认重试延迟（秒）- 增加以减少请求频率
         "request_timeout": 45,  # 默认请求超时（秒）- 增加以允许更长的处理时间
         "stream_timeout": 180,  # 流式请求的默认超时（秒）- 增加以允许更长的处理时间
-        "rate_limit": 30,  # 默认速率限制（每分钟请求数）- 减少以避免触发API速率限制
+        "rate_limit_per_minute": 60, # 每分钟请求数限制 (用于 RateLimiter)
+        # "rate_limit": 30,  # 旧的速率限制键，考虑移除或保留作参考
+        # "rate_limit_window_seconds": 60, # 旧的速率限制窗口，考虑移除
         "account_cooldown_seconds": 300,  # 账户冷却期（秒）- 在遇到429错误后暂时不使用该账户
         "debug_mode": False,  # 调试模式
         "api_access_token": "sk-2api-ondemand-access-token-2025",  # API访问认证Token
+        # 模型价格配置 (单位：美元/百万Tokens)
+        "model_prices": {
+            "gpt-3.5-turbo": {"input": 0.50, "output": 1.50},
+            "gpto3-mini": {"input": 0.50, "output": 1.50}, # 假设与 gpt-3.5-turbo 相同
+            "gpt-4o": {"input": 5.00, "output": 15.00},
+            "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+            "gpt-4-turbo": {"input": 10.00, "output": 30.00}, # gpt-4.1 的别名
+            "gpt-4.1": {"input": 10.00, "output": 30.00},
+            "gpt-4.1-mini": {"input": 1.00, "output": 3.00}, # 假设价格
+            "gpt-4.1-nano": {"input": 0.50, "output": 1.50}, # 假设价格
+            "deepseek-v3": {"input": 1.00, "output": 2.00}, # 假设价格
+            "deepseek-r1": {"input": 1.00, "output": 2.00}, # 假设价格
+            "claude-3.5-sonnet": {"input": 3.00, "output": 15.00},
+            "claude-3.7-sonnet": {"input": 3.00, "output": 15.00}, # 假设与 3.5 相同
+            "claude-3-opus": {"input": 15.00, "output": 75.00},
+            "claude-3-haiku": {"input": 0.25, "output": 1.25},
+            "gemini-1.5-pro": {"input": 3.50, "output": 10.50}, # 假设价格
+            "gemini-2.0-flash": {"input": 0.35, "output": 1.05} # 假设价格
+            # 根据需要添加更多模型的价格
+        },
+        "default_model_price": {"input": 1.00, "output": 3.00}, # 默认模型价格（美元/百万Tokens）
         "stats_file_path": "stats_data.json",  # 统计数据文件路径
         "stats_backup_path": "stats_data_backup.json",  # 统计数据备份文件路径
         "stats_save_interval": 300,  # 每5分钟保存一次统计数据
@@ -65,7 +89,6 @@ class Config:
             "account_usage": defaultdict(int),  # 账户使用次数
             "daily_usage": defaultdict(int),  # 每日使用次数
             "hourly_usage": defaultdict(int),  # 每小时使用次数
-            "request_history": [],  # 请求历史记录
             "total_prompt_tokens": 0,  # 总提示tokens
             "total_completion_tokens": 0,  # 总完成tokens
             "total_tokens": 0,  # 总tokens
@@ -107,10 +130,42 @@ class Config:
         """批量更新配置值"""
         self._config.update(config_dict)
     
+    def get_model_mapping(self) -> Dict[str, str]:
+        """获取模型名称到端点ID的映射"""
+        # 返回副本以防止外部修改
+        return self._model_mapping.copy()
+
     def get_model_endpoint(self, model_name: str) -> str:
         """获取模型对应的端点ID"""
-        return self._model_mapping.get(model_name, self.get("default_endpoint_id"))
-    
+        mapping = self.get_model_mapping()
+        default_id = self.get("default_endpoint_id")
+        # 确保总是返回一个字符串值
+        if model_name in mapping:
+            return mapping[model_name]
+        elif default_id is not None:
+            return default_id
+        else:
+            return "predefined-claude-3.7-sonnet"  # 硬编码的后备值
+
+    def get_accounts(self) -> List[Dict[str, str]]:
+        """获取账户信息列表"""
+        # 返回副本以防止外部修改
+        return list(self.accounts) # 创建列表副本
+
+    def get_usage_stats(self) -> Dict[str, Any]:
+        """获取用量统计数据"""
+        # 返回副本以防止外部修改
+        with self.usage_stats_lock:
+            # 创建深层一些的副本可能更安全，但这里为了性能暂时只复制顶层
+            return self.usage_stats.copy()
+
+    def get_client_sessions(self) -> Dict[str, Any]:
+        """获取客户端会话信息"""
+        # 返回副本以防止外部修改
+        with self.client_sessions_lock:
+            # 创建深层一些的副本可能更安全，但这里为了性能暂时只复制顶层
+            return self.client_sessions.copy()
+
     def load_from_file(self) -> bool:
         """从配置文件加载配置"""
         try:
@@ -176,7 +231,7 @@ class Config:
         """将统计数据保存到文件中"""
         try:
             with self.usage_stats_lock:
-                # 创建统计数据的副本
+                # 创建统计数据的副本，但不包含 request_history
                 stats_copy = {
                     "total_requests": self.usage_stats["total_requests"],
                     "successful_requests": self.usage_stats["successful_requests"],
@@ -185,7 +240,7 @@ class Config:
                     "account_usage": dict(self.usage_stats["account_usage"]),
                     "daily_usage": dict(self.usage_stats["daily_usage"]),
                     "hourly_usage": dict(self.usage_stats["hourly_usage"]),
-                    "request_history": list(self.usage_stats["request_history"]),
+                    # 不复制 request_history 到文件，避免文件过大
                     "total_prompt_tokens": self.usage_stats["total_prompt_tokens"],
                     "total_completion_tokens": self.usage_stats["total_completion_tokens"],
                     "total_tokens": self.usage_stats["total_tokens"],
@@ -253,13 +308,7 @@ class Config:
                     for hour, tokens in saved_stats.get("hourly_tokens", {}).items():
                         self.usage_stats["hourly_tokens"][hour] = tokens
                     
-                    # 更新请求历史
-                    self.usage_stats["request_history"] = saved_stats.get("request_history", [])
-                    
-                    # 限制历史记录数量
-                    max_history_items = self.get("max_history_items")
-                    if len(self.usage_stats["request_history"]) > max_history_items:
-                        self.usage_stats["request_history"] = self.usage_stats["request_history"][-max_history_items:]
+                    # 不再加载请求历史
                 
                 logger.info(f"已从 {stats_file_path} 加载统计数据")
                 return True
@@ -293,9 +342,9 @@ class Config:
         if not self.accounts:
             error_msg = "在 config.json 或环境变量 ONDEMAND_ACCOUNTS 中未找到账户信息"
             logger.critical(error_msg)
-            # 不抛出异常，而是继续运行
-            logger.warning("将继续运行，但没有账户信息，可能会导致功能受限")
-        
+            # 抛出异常，因为没有账户信息服务无法正常运行
+            raise ValueError(error_msg)
+
         logger.info("已加载API访问Token")
         
         # 加载之前保存的统计数据
@@ -316,14 +365,22 @@ class Config:
             for email in expired_cooldowns:
                 del self.account_cooldowns[email]
                 logger.info(f"账户 {email} 的冷却期已结束，现在可用")
-            
+
+            accounts = self.get_accounts() # 获取账户列表
+            num_accounts = len(accounts)
+            if num_accounts == 0:
+                # 理论上不应该到这里，因为init会检查并抛出异常
+                logger.critical("尝试获取下一个账户，但账户列表为空！")
+                # 即使init检查过，这里也返回明确的错误信号
+                return None, None
+
             # 尝试最多len(self.accounts)次，以找到一个不在冷却期的账户
-            for _ in range(len(self.accounts)):
-                account_details = self.accounts[self.current_account_index]
+            for _ in range(num_accounts):
+                account_details = accounts[self.current_account_index]
                 email = account_details.get('email')
-                
+
                 # 更新索引到下一个账户，为下次调用做准备
-                self.current_account_index = (self.current_account_index + 1) % len(self.accounts)
+                self.current_account_index = (self.current_account_index + 1) % num_accounts
                 
                 # 检查账户是否在冷却期
                 if email in self.account_cooldowns:
@@ -336,10 +393,17 @@ class Config:
                 logger.info(f"[系统] 新会话将使用账户: {email}")
                 return email, account_details.get('password')
             
-            # 如果所有账户都在冷却期，使用第一个账户（即使它在冷却期）
-            logger.warning("所有账户都在冷却期！使用第一个账户，尽管它可能会触发速率限制")
-            account_details = self.accounts[0]
-            return account_details.get('email'), account_details.get('password')
+            # 如果所有账户都在冷却期，记录警告并返回第一个账户（即使它可能在冷却期）
+            logger.warning("所有账户都在冷却期！将尝试使用索引为0的账户，但它可能仍在冷却期")
+            # 确保即使所有账户都在冷却期，也返回第一个账户的信息
+            # 注意：这里需要使用之前获取的 accounts 列表
+            if num_accounts > 0: # 再次检查以防万一
+                 account_details = accounts[0]
+                 return account_details.get('email'), account_details.get('password')
+            else:
+                 # 这种情况理论上不应该发生，因为前面已经检查过 num_accounts == 0
+                 logger.error("在处理所有账户冷却的情况时发现账户列表为空！")
+                 return None, None
 
 
 # 创建全局配置实例
@@ -352,35 +416,39 @@ def init_config():
 
 def get_config_value(name: str, default: Any = None) -> Any:
     """
-    获取当前配置变量的最新值。
-    推荐外部通过 config.get_config_value('变量名') 获取配置。
-    对于 accounts, model_mapping, usage_stats, client_sessions，请使用新增的专用getter函数。
+    获取通用配置变量的值。
+    对于结构化的配置数据（如 accounts, model_mapping, usage_stats, client_sessions），
+    推荐使用 `config_instance` 对象的专用 getter 方法（例如 `config_instance.get_accounts()`）以获得类型安全。
     """
     return config_instance.get(name, default)
 
-# 新增的类型安全的getter函数
+# 全局兼容函数（保持向后兼容性，但推荐直接使用 config_instance 的方法）
 def get_accounts() -> List[Dict[str, str]]:
-    """获取账户信息列表"""
-    return config_instance.accounts
+    """获取账户信息列表 (兼容函数)"""
+    logger.warning("调用全局 get_accounts() 函数，推荐使用 config_instance.get_accounts()")
+    return config_instance.get_accounts()
 
 def get_model_mapping() -> Dict[str, str]:
-    """获取模型名称到端点ID的映射"""
-    return config_instance._model_mapping
+    """获取模型映射 (兼容函数)"""
+    logger.warning("调用全局 get_model_mapping() 函数，推荐使用 config_instance.get_model_mapping()")
+    return config_instance.get_model_mapping()
 
 def get_usage_stats() -> Dict[str, Any]:
-    """获取用量统计数据"""
-    return config_instance.usage_stats
+    """获取用量统计 (兼容函数)"""
+    logger.warning("调用全局 get_usage_stats() 函数，推荐使用 config_instance.get_usage_stats()")
+    return config_instance.get_usage_stats()
 
 def get_client_sessions() -> Dict[str, Any]:
-    """获取客户端会话信息"""
-    return config_instance.client_sessions
+    """获取客户端会话 (兼容函数)"""
+    logger.warning("调用全局 get_client_sessions() 函数，推荐使用 config_instance.get_client_sessions()")
+    return config_instance.get_client_sessions()
 
 def get_next_ondemand_account_details():
-    """获取下一个账户的兼容函数"""
+    """获取下一个账户的邮箱和密码 (兼容函数)"""
     return config_instance.get_next_ondemand_account_details()
 
 def set_account_cooldown(email, cooldown_seconds=None):
-    """设置账户冷却期
+    """设置账户冷却期 (兼容函数)
     
     Args:
         email: 账户邮箱

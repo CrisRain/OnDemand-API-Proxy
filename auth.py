@@ -2,7 +2,6 @@ import threading
 import time
 from datetime import datetime, timedelta
 from functools import wraps
-# from flask import request, jsonify # 移除冗余导入
 from utils import logger
 import config
 
@@ -11,9 +10,9 @@ class RateLimiter:
     def __init__(self, limit_per_minute=None): # 允许传入参数，但优先配置
         # 优先从配置读取，如果未配置或传入了明确值，则使用该值
         # 配置项: "rate_limit"
-        configured_limit = config.get_config_value("rate_limit", default=60) # 默认60次/分钟
+        configured_limit = config.get_config_value("rate_limit", default=30) # 从配置读取，默认30次/分钟
         self.limit = limit_per_minute if limit_per_minute is not None else configured_limit
-        self.window_size = 60  # 窗口大小（秒）
+        self.window_size = config.get_config_value("rate_limit_window_seconds", default=60) # 从配置读取，默认60秒
         self.requests = {}  # {identifier: [timestamp1, timestamp2, ...]}
         self.lock = threading.Lock()
     
