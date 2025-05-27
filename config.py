@@ -28,22 +28,37 @@ class Config:
         "api_access_token": "sk-2api-ondemand-access-token-2025",  # API访问认证Token
         # 模型价格配置 (单位：美元/百万Tokens)
         "model_prices": {
-            "gpt-3.5-turbo": {"input": 0.50, "output": 1.50},
-            "gpto3-mini": {"input": 0.50, "output": 1.50}, # 假设与 gpt-3.5-turbo 相同
-            "gpt-4o": {"input": 5.00, "output": 15.00},
-            "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-            "gpt-4-turbo": {"input": 10.00, "output": 30.00}, # gpt-4.1 的别名
-            "gpt-4.1": {"input": 10.00, "output": 30.00},
-            "gpt-4.1-mini": {"input": 1.00, "output": 3.00}, # 假设价格
-            "gpt-4.1-nano": {"input": 0.50, "output": 1.50}, # 假设价格
-            "deepseek-v3": {"input": 1.00, "output": 2.00}, # 假设价格
-            "deepseek-r1": {"input": 1.00, "output": 2.00}, # 假设价格
-            "claude-3.5-sonnet": {"input": 3.00, "output": 15.00},
-            "claude-3.7-sonnet": {"input": 3.00, "output": 15.00}, # 假设与 3.5 相同
-            "claude-3-opus": {"input": 15.00, "output": 75.00},
-            "claude-3-haiku": {"input": 0.25, "output": 1.25},
-            "gemini-1.5-pro": {"input": 3.50, "output": 10.50}, # 假设价格
-            "gemini-2.0-flash": {"input": 0.35, "output": 1.05} # 假设价格
+            # OpenAI 模型
+            "gpt-3.5-turbo": {"input": 0.25, "output": 0.75},
+            "o3-mini": {"input": 0.55, "output": 2.20}, # 对应价格表中的 o3-mini
+            "o3": {"input": 5.00, "output": 20.00}, # 对应价格表中的 o3
+            "gpt-4o": {"input": 1.25, "output": 5.00},
+            "gpt-4o-mini": {"input": 0.075, "output": 0.30},
+            "o4-mini": {"input": 0.55, "output": 2.20}, # 对应价格表中的 o4-mini
+            "gpt-4-turbo": {"input": 5.00, "output": 15.00}, # gpt-4.1 的别名
+            "gpt-4.1": {"input": 1.00, "output": 4.00},
+            "gpt-4.1-mini": {"input": 0.20, "output": 0.80},
+            "gpt-4.1-nano": {"input": 0.05, "output": 0.20},
+            
+            # Deepseek 模型
+            "deepseek-v3": {"input": 0.15, "output": 0.44}, # 价格表 deepseek/deepseek-chat-v3
+            "deepseek-r1": {"input": 0.25, "output": 1.09}, # 价格表 deepseek/deepseek-r1
+            "deepseek-r1-distill-llama-70b": {"input": 0.05, "output": 0.20}, # 价格表 deepseek/deepseek-r1-distill-llama-70b
+            
+            # Claude 模型
+            "claude-3.5-sonnet": {"input": 1.50, "output": 7.50},
+            "claude-3.7-sonnet": {"input": 1.50, "output": 7.50},
+            "claude-3-opus": {"input": 7.50, "output": 37.50},
+            "claude-3-haiku": {"input": 0.125, "output": 0.625},
+            "claude-4-opus": {"input": 7.50, "output": 37.50}, # 价格表 anthropic/claude-opus-4
+            "claude-4-sonnet": {"input": 1.50, "output": 7.50}, # 价格表 anthropic/claude-sonnet-4
+            
+            # Gemini 模型
+            "gemini-1.5-pro": {"input": 0.625, "output": 2.50}, # 价格表 gemini-1.5-pro
+            "gemini-2.0-flash": {"input": 0.05, "output": 0.20}, # 价格表 google/gemini-2.0-flash-001
+            "gemini-2.5-pro": {"input": 0.625, "output": 5.00}, # 价格表 gemini-2.5-pro-preview
+            "gemini-2.5-flash": {"input": 0.075, "output": 0.30} # 价格表 gemini-2.5-flash-preview
+            
             # 根据需要添加更多模型的价格
         },
         "default_model_price": {"input": 1.00, "output": 3.00}, # 默认模型价格（美元/百万Tokens）
@@ -51,27 +66,37 @@ class Config:
         "stats_backup_path": "stats_data_backup.json",  # 统计数据备份文件路径
         "stats_save_interval": 300,  # 每5分钟保存一次统计数据
         "max_history_items": 1000,  # 最多保存的历史记录数量
-        "default_endpoint_id": "predefined-claude-3.7-sonnet"  # 备用/默认端点 ID
+        "default_endpoint_id": "predefined-claude-4-sonnet"  # 备用/默认端点 ID
     }
     
     # 模型名称映射：OpenAI 模型名 -> on-demand.io endpointId
     _model_mapping = {
+        # OpenAI 模型
         "gpt-3.5-turbo": "predefined-openai-gpto3-mini",
-        "gpto3-mini": "predefined-openai-gpto3-mini",
+        "o3-mini": "predefined-openai-gpto3-mini",
+        "o3": "predefined-openai-gpto3",  # 当前状态：inactive
         "gpt-4o": "predefined-openai-gpt4o",
         "gpt-4o-mini": "predefined-openai-gpt4o-mini",
+        "o4-mini": "predefined-openai-gpto4-mini",  # 当前状态：inactive
         "gpt-4-turbo": "predefined-openai-gpt4.1",  # gpt-4.1 的别名
         "gpt-4.1": "predefined-openai-gpt4.1",
         "gpt-4.1-mini": "predefined-openai-gpt4.1-mini",
         "gpt-4.1-nano": "predefined-openai-gpt4.1-nano",
+        
+        # Deepseek 模型
         "deepseek-v3": "predefined-deepseek-v3",
         "deepseek-r1": "predefined-deepseek-r1",
-        "claude-3.5-sonnet": "predefined-claude-3.5-sonnet",
-        "claude-3.7-sonnet": "predefined-claude-3.7-sonnet",
-        "claude-3-opus": "predefined-claude-3-opus",
-        "claude-3-haiku": "predefined-claude-3-haiku",
-        "gemini-1.5-pro": "predefined-gemini-2.0-flash",
+        "deepseek-r1-distill-llama-70b": "predefined-deepseek-r1-distill-llama-70b",  # 当前状态：inactive
+        
+        # Claude 模型
+        "claude-4-opus": "predefined-claude-4-opus",
+        "claude-4-sonnet": "predefined-claude-4-sonnet",
+        
+        # Gemini 模型
         "gemini-2.0-flash": "predefined-gemini-2.0-flash",
+        "gemini-2.5-pro": "predefined-gemini-2.5-pro-preview",  # 当前状态：inactive
+        "gemini-2.5-flash": "predefined-gemini-2.5-flash",  # 当前状态：inactive
+        
         # 根据需要添加更多映射
     }
     
@@ -145,7 +170,7 @@ class Config:
         elif default_id is not None:
             return default_id
         else:
-            return "predefined-claude-3.7-sonnet"  # 硬编码的后备值
+            return "predefined-claude-4-sonnet"  # 硬编码的后备值
 
     def get_accounts(self) -> List[Dict[str, str]]:
         """获取账户信息列表"""
