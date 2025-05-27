@@ -330,13 +330,14 @@ def register_routes(app):
                                 content = event_data.get("answer", "")
                                 if content is not None:
                                     full_reply.append(content)
-                                    yield f"data: {json.dumps({
+                                    chunk_data = {
                                         'id': request_id,
                                         'object': 'chat.completion.chunk',
                                         'created': int(time.time()),
                                         'model': requested_model_name,
                                         'choices': [{'delta': {'content': content}, 'index': 0, 'finish_reason': None}]
-                                    }, ensure_ascii=False)}\n\n"
+                                    }
+                                    yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
                             
                             # 从metrics事件中提取准确的token计数
                             elif event_type == "metricsLog":
