@@ -360,7 +360,7 @@ def register_routes(app):
                         total_tokens = actual_tokens["total"]
                     
                     # 发送终止块
-                    yield f"data: {json.dumps({
+                    end_chunk_data = {
                         'id': request_id,
                         'object': 'chat.completion.chunk',
                         'created': int(time.time()),
@@ -371,7 +371,8 @@ def register_routes(app):
                             'completion_tokens': completion_tokens,
                             'total_tokens': total_tokens
                         }
-                    }, ensure_ascii=False)}\n\n"
+                    }
+                    yield f"data: {json.dumps(end_chunk_data, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
                     
                     # 更新使用统计
@@ -391,14 +392,15 @@ def register_routes(app):
                 except Exception as e:
                     # 处理异常
                     prompt_tokens, _, _ = count_message_tokens(messages, requested_model_name)
-                    yield f"data: {json.dumps({
+                    error_chunk_data = {
                         'id': request_id,
                         'object': 'chat.completion.chunk',
                         'created': int(time.time()),
                         'model': requested_model_name,
                         'choices': [{'delta': {'content': f'[流处理异常: {str(e)}]'}, 'index': 0, 'finish_reason': 'error'}],
                         'usage': {'prompt_tokens': prompt_tokens or 0, 'completion_tokens': 0, 'total_tokens': prompt_tokens or 0}
-                    }, ensure_ascii=False)}\n\n"
+                    }
+                    yield f"data: {json.dumps(error_chunk_data, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
                     
                     # 更新失败统计
