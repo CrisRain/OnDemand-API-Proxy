@@ -1,273 +1,275 @@
-# OnDemand-API-Proxy 代理服务
+# OnDemand API 代理服务
 
-## 本项目仅供学习交流使用，请勿用于其他用途
+## 项目简介
 
-一款基于 Flask 的 API 代理服务，提供兼容 OpenAI API 的接口，支持多种大型语言模型，实现多账户轮询和会话管理。
+本项目是一个基于 Python Flask 实现的 API 代理服务，旨在作为 [on-demand.io](https://on-demand.io/) 服务的中间层。它提供了与 OpenAI API 兼容的接口，使得现有应用可以无缝切换或同时使用 OnDemand 提供的多种大语言模型服务。
 
-## 功能特点
+主要目标包括：
+*   提供 OpenAI 兼容的 `/v1/chat/completions` 和 `/v1/models` API 端点。
+*   支持多个 OnDemand 账户的配置，并实现账户轮询和自动切换机制，以应对单个账户的速率限制或额度问题。
+*   通过 Bearer Token 实现对代理服务自身的访问认证。
+*   内置请求速率限制功能，保护后端服务。
+*   提供详细的用量统计功能，包括请求数、Token 消耗、成本估算等，并提供一个 Web 页面进行展示。
+*   支持流式 (streaming) 和非流式响应。
+*   通过 JSON 配置文件和环境变量提供灵活的配置选项。
+*   集成了健壮的错误处理和自动重试机制，以提高服务的稳定性和可靠性。
+*   提供可配置的日志系统，方便监控和问题排查。
 
-- **兼容 OpenAI API**：提供标准的 `/v1/models` 和 `/v1/chat/completions` 接口
-- **多模型支持**：支持 GPT-4o、Claude 3.7 Sonnet、Gemini 2.0 Flash 等多种模型
-- **多轮对话**：通过会话管理保持对话上下文
-- **账户轮换**：自动轮询使用多个 on-demand.io 账户，平衡负载
-- **会话管理**：自动处理会话超时和重新连接
-- **统计面板**：提供实时使用统计和图表展示
-- **可配置的认证**：支持通过环境变量或配置文件设置 API 访问令牌
-- **Docker 支持**：易于部署到 Hugging Face Spaces 或其他容器环境
+## 主要特性
 
-## 支持的模型
+*   **OpenAI API 兼容**: 支持 `/v1/chat/completions` 和 `/v1/models` 端点，方便集成。
+*   **多账户轮询与冷却**: 可配置多个 OnDemand 账户，当一个账户遇到速率限制 (429错误) 时，会自动切换到下一个可用账户，并将受限账户置于冷却期。
+*   **API 访问认证**: 通过 Bearer Token 保护代理服务接口。
+*   **请求速率限制**: 可配置每分钟的请求上限，防止滥用。
+*   **用量统计与展示**:
+    *   实时跟踪总请求数、成功/失败请求数。
+    *   按模型、按账户、按天、按小时统计请求次数和 Token 使用量。
+    *   基于配置的模型价格估算累计成本。
+    *   提供 `/` 路径的 HTML 页面展示统计数据。
+*   **流式响应**: 完全支持 OpenAI API 的流式响应模式。
+*   **灵活配置**: 支持通过 `config.json` 文件和环境变量进行详细配置。
+*   **自动重试**: 对后端 API 请求（如登录、创建会话、发送查询）实现了自动重试逻辑，能处理连接错误、超时、服务器错误 (5xx) 和速率限制错误 (429)。
+*   **Token 计算**: 使用 `tiktoken` 库进行较准确的 Token 数量计算。
+*   **可配置日志**: 日志可同时输出到控制台和指定文件，级别和格式可配置。
 
-服务支持以下模型（部分列表）：
+## 安装与设置
 
-| API 模型名称 | 实际使用模型 |
-|------------|------------|
-| `gpt-4o` | predefined-openai-gpt4o |
-| `gpt-4o-mini` | predefined-openai-gpt4o-mini |
-| `gpt-3.5-turbo` / `gpto3-mini` | predefined-openai-gpto3-mini |
-| `gpt-4-turbo` / `gpt-4.1` | predefined-openai-gpt4.1 |
-| `gpt-4.1-mini` | predefined-openai-gpt4.1-mini |
-| `gpt-4.1-nano` | predefined-openai-gpt4.1-nano |
-| `claude-3.5-sonnet` / `claude-3.7-sonnet` | predefined-claude-3.7-sonnet |
-| `claude-3-opus` | predefined-claude-3-opus |
-| `claude-3-haiku` | predefined-claude-3-haiku |
-| `gemini-1.5-pro` / `gemini-2.0-flash` | predefined-gemini-2.0-flash |
-| `deepseek-v3` | predefined-deepseek-v3 |
-| `deepseek-r1` | predefined-deepseek-r1 |
+### 环境要求
+*   Python 3.7+
+*   pip (Python 包安装器)
+
+### 安装步骤
+
+1.  **克隆项目**:
+    ```bash
+    git clone <your_repository_url>
+    cd ondemand-api-proxy
+    ```
+
+2.  **安装依赖**:
+    项目依赖于 `Flask`, `requests`, `tiktoken` 等库。请通过 `requirements.txt` 文件安装：
+    ```bash
+    pip install -r requirements.txt
+    ```
+    *(注意: 请确保 `requirements.txt` 文件包含所有必要的依赖。根据代码分析，至少应包含 `Flask`, `requests`, `tiktoken`)*
+
+3.  **创建配置文件**:
+    在项目根目录下创建一个名为 `config.json` 的文件。这是项目的主要配置文件。
 
 ## 配置说明
 
-### 配置文件 (config.json)
+项目配置可以通过 `config.json` 文件和环境变量进行。环境变量的优先级高于 `config.json` 中的同名配置。
 
-配置文件支持以下参数：
+### 1. `config.json` 文件
+
+以下是一个 `config.json` 的结构示例及其主要配置项说明：
 
 ```json
 {
-  "api_access_token": "你的自定义访问令牌",
   "accounts": [
-    {"email": "账户1@example.com", "password": "密码1"},
-    {"email": "账户2@example.com", "password": "密码2"}
+    {
+      "email": "your_ondemand_email_1@example.com",
+      "password": "your_ondemand_password_1"
+    },
+    {
+      "email": "your_ondemand_email_2@example.com",
+      "password": "your_ondemand_password_2"
+    }
   ],
-  "session_timeout_minutes": 30,
-  "max_retries": 3,
-  "retry_delay": 1,
-  "request_timeout": 30,
-  "stream_timeout": 120,
-  "rate_limit": 60,
-  "debug_mode": false
+  "api_access_token": "YOUR_SECRET_PROXY_ACCESS_TOKEN",
+  "model_prices": {
+    "gpt-3.5-turbo": {"input": 0.25, "output": 0.75},
+    "gpt-4o": {"input": 1.25, "output": 5.00},
+    "claude-3.5-sonnet": {"input": 1.50, "output": 7.50}
+    // 根据需要添加更多模型及其价格 (美元/百万Tokens)
+  },
+  "default_model_price": {"input": 1.00, "output": 3.00},
+  "rate_limit_per_minute": 60,
+  "account_cooldown_seconds": 300,
+  "ondemand_session_timeout_minutes": 30,
+  "session_timeout_minutes": 3600,
+  "max_retries": 5,
+  "retry_delay": 3,
+  "request_timeout": 45,
+  "stream_timeout": 180,
+  "debug_mode": false,
+  "FLASK_DEBUG": false,
+  "stats_file_path": "stats_data.json",
+  "stats_backup_path": "stats_data_backup.json",
+  "stats_save_interval": 300,
+  "default_endpoint_id": "predefined-claude-4-sonnet"
 }
 ```
 
-### 环境变量
+**主要配置项解释**:
 
-所有配置也可以通过环境变量设置：
+*   `accounts` (必需): 一个包含 OnDemand 账户凭据（`email` 和 `password`）的列表。至少需要一个账户。
+*   `api_access_token` (必需): 访问此代理服务所需的 Bearer Token。客户端在请求时需要在 `Authorization` 头部提供此 Token。
+*   `model_prices`: 一个字典，定义了不同模型的输入和输出价格（单位：美元/百万 Tokens），用于在统计页面估算成本。
+*   `default_model_price`: 当请求的模型未在 `model_prices` 中定义时，使用的默认价格。
+*   `rate_limit_per_minute`: 代理服务对每个 `api_access_token` 每分钟允许的最大请求数。
+*   `account_cooldown_seconds`: 当一个 OnDemand 账户因为速率限制（如429错误）失败时，该账户将被置于冷却状态的秒数，在此期间不会被用于处理请求。
+*   `ondemand_session_timeout_minutes`: OnDemand 平台会话的活跃超时时间（分钟）。(此配置项似乎在 `client.py` 中未直接使用，但存在于 `config.py` 默认配置中)。
+*   `session_timeout_minutes`: 代理服务自身维护的会话（如 `client_sessions`）的超时时间（分钟）。(此配置项似乎在当前代码中主要影响 `_cleanup_user_sessions`，但该功能已被注释掉)。
+*   `max_retries`: 对 OnDemand API 请求失败时的最大重试次数。
+*   `retry_delay`: 重试之间的基础延迟时间（秒）。实际延迟时间会根据重试策略（如指数退避、线性退避）调整。
+*   `request_timeout`: 普通 HTTP 请求的默认超时时间（秒）。
+*   `stream_timeout`: 流式 HTTP 请求的默认超时时间（秒）。
+*   `debug_mode`: 项目的通用调试模式开关 (布尔值)。会影响日志详细程度和某些内部行为。
+*   `FLASK_DEBUG`: Flask 应用的调试模式开关 (布尔值)。会启用 Flask 的调试器和自动重载。
+*   `stats_file_path`: 用量统计数据保存的文件路径 (默认为 `stats_data.json`)。
+*   `stats_backup_path`: 统计数据备份文件的路径 (默认为 `stats_data_backup.json`)。
+*   `stats_save_interval`: 统计数据自动保存到文件的时间间隔（秒，默认为300秒，即5分钟）。
+*   `default_endpoint_id`: 当请求中沒有指定模型，或指定模型无法映射时，使用的默认 OnDemand `endpointId`。
 
-- `API_ACCESS_TOKEN`: API 访问令牌
-- `ONDEMAND_ACCOUNTS`: JSON 格式的账户信息
-- `SESSION_TIMEOUT_MINUTES`: 会话超时时间（分钟）
-- `MAX_RETRIES`: 最大重试次数
-- `RETRY_DELAY`: 重试延迟（秒）
-- `REQUEST_TIMEOUT`: 请求超时（秒）
-- `STREAM_TIMEOUT`: 流式请求超时（秒）
-- `RATE_LIMIT`: 速率限制（每分钟请求数）
-- `DEBUG_MODE`: 调试模式（true/false）
+### 2. 环境变量
 
-## API 接口说明
+以下环境变量可用于覆盖 `config.json` 中的设置或提供特定配置：
 
-### 获取模型列表
+*   **账户信息**:
+    *   `ONDEMAND_ACCOUNTS`: 一个 JSON 格式的字符串，用于提供账户列表。如果设置，它将覆盖 `config.json` 中的 `accounts`。
+        *   示例: `ONDEMAND_ACCOUNTS='{"accounts": [{"email": "user1@example.com", "password": "pw1"}, {"email": "user2@example.com", "password": "pw2"}]}'`
+*   **代理访问令牌**:
+    *   `API_ACCESS_TOKEN`: 覆盖 `config.json` 中的 `api_access_token`。
+*   **运行参数**:
+    *   `PORT`: Flask 应用监听的端口号 (默认为 `7860`)。
+    *   `FLASK_DEBUG`: 设置为 `'true'` (不区分大小写) 以启用 Flask 调试模式。覆盖 `config.json` 中的 `FLASK_DEBUG`。
+*   **配置文件路径**:
+    *   `APP_CONFIG_PATH`: 指定 `config.json` 文件的自定义路径。如果设置，则会加载此路径的配置文件。
+*   **日志配置**:
+    *   `LOG_PATH`: 日志文件的完整路径 (默认为 `/tmp/2api.log`)。
+    *   `LOG_LEVEL`: 日志级别 (如 `DEBUG`, `INFO`, `WARNING`, `ERROR`, 默认为 `INFO`)。
+    *   `LOG_FORMAT`: 日志格式字符串 (默认为 `%(asctime)s - %(name)s - %(levelname)s - %(message)s`)。
+*   **其他配置项的环境变量形式**:
+    *   `ONDEMAND_SESSION_TIMEOUT_MINUTES` (对应 `ondemand_session_timeout_minutes`)
+    *   `SESSION_TIMEOUT_MINUTES` (对应 `session_timeout_minutes`)
+    *   `MAX_RETRIES` (对应 `max_retries`)
+    *   `RETRY_DELAY` (对应 `retry_delay`)
+    *   `REQUEST_TIMEOUT` (对应 `request_timeout`)
+    *   `STREAM_TIMEOUT` (对应 `stream_timeout`)
+    *   `RATE_LIMIT` (对应 `rate_limit_per_minute`，注意名称差异，但代码中 `RateLimiter` 初始化时读取的是 `rate_limit`)
+    *   `DEBUG_MODE` (对应 `debug_mode`, 设置为 `'true'` 或 `'false'`)
 
-```
-GET /v1/models
-```
+### 配置优先级
+1.  环境变量
+2.  `config.json` 文件中定义的值
+3.  代码中定义的默认值
 
-返回支持的模型列表，格式与 OpenAI API 兼容。
+## 运行项目
 
-### 聊天补全
-
-```
-POST /v1/chat/completions
-```
-
-**请求头：**
-```
-Authorization: Bearer 你的API访问令牌
-Content-Type: application/json
-```
-
-**请求体：**
-```json
-{
-  "model": "gpt-4o",
-  "messages": [
-    {"role": "system", "content": "你是一个有用的助手。"},
-    {"role": "user", "content": "你好，请介绍一下自己。"}
-  ],
-  "temperature": 0.7,
-  "max_tokens": 2000,
-  "stream": false
-}
-```
-
-**参数说明：**
-- `model`: 使用的模型名称
-- `messages`: 对话消息数组
-- `temperature`: 温度参数（0-1）
-- `max_tokens`: 最大生成令牌数
-- `stream`: 是否使用流式响应
-- `top_p`: 核采样参数（0-1）
-- `frequency_penalty`: 频率惩罚（0-2）
-- `presence_penalty`: 存在惩罚（0-2）
-
-## 统计面板
-
-访问根路径 `/` 可以查看使用统计面板，包括：
-
-- 总请求数和成功率
-- Token 使用统计
-- 每日和每小时使用量图表
-- 模型使用情况
-- 最近请求历史
-
-## 部署指南
-
-### Hugging Face Spaces 部署（推荐）
-
-1. **创建 Hugging Face 账户**：
-   - 访问 [https://huggingface.co/](https://huggingface.co/) 注册账户
-
-2. **创建 Space**：
-   - 点击 [创建新的 Space](https://huggingface.co/new-space)
-   - 填写 Space 名称
-   - **重要**：选择 `Docker` 作为 Space 类型
-   - 设置权限（公开或私有）
-
-3. **上传代码**：
-   - 将以下文件上传到你的 Space 代码仓库：
-     - `app.py`（主程序）
-     - `routes.py`（路由定义）
-     - `config.py`（配置管理）
-     - `auth.py`（认证模块）
-     - `client.py`（客户端实现）
-     - `utils.py`（工具函数）
-     - `requirements.txt`（依赖列表）
-     - `Dockerfile`（Docker 配置）
-     - `templates/`（模板目录）
-     - `static/`（静态资源目录）
-
-4. **配置账户信息和 API 访问令牌**：
-   - 进入 Space 的 "Settings" → "Repository secrets"
-   - 添加 `ONDEMAND_ACCOUNTS` Secret：
-     ```json
-     {
-       "accounts": [
-         {"email": "你的邮箱1@example.com", "password": "你的密码1"},
-         {"email": "你的邮箱2@example.com", "password": "你的密码2"}
-       ]
-     }
-     ```
-   - 添加 `API_ACCESS_TOKEN` Secret 设置自定义访问令牌
-     - 如果不设置，将使用默认值 "sk-2api-ondemand-access-token-2025"
-
-5. **可选配置**：
-   - 添加其他环境变量如 `SESSION_TIMEOUT_MINUTES`、`RATE_LIMIT` 等
-
-6. **完成部署**：
-   - Hugging Face 会自动构建 Docker 镜像并部署你的 API
-   - 访问你的 Space URL（如 `https://你的用户名-你的space名称.hf.space`）
-
-### 本地部署
-
-1. **克隆代码**：
-   ```bash
-   git clone https://github.com/你的用户名/ondemand-api-proxy.git
-   cd ondemand-api-proxy
-   ```
-
-2. **安装依赖**：
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **配置**：
-   - 创建 `config.json` 文件：
-     ```json
-     {
-       "api_access_token": "你的自定义访问令牌",
-       "accounts": [
-         {"email": "账户1@example.com", "password": "密码1"},
-         {"email": "账户2@example.com", "password": "密码2"}
-       ]
-     }
-     ```
-   - 或设置环境变量
-
-4. **启动服务**：
-   ```bash
-   python app.py
-   ```
-   
-5. **访问服务**：
-   - API 接口：`http://localhost:5000/v1/chat/completions`
-   - 统计面板：`http://localhost:5000/`
-
-### Docker 部署
-
+### 开发模式
+直接运行 `app.py` 文件：
 ```bash
-# 构建镜像
-docker build -t ondemand-api-proxy .
-
-# 运行容器
-docker run -p 7860:7860 \
-  -e API_ACCESS_TOKEN="你的访问令牌" \
-  -e ONDEMAND_ACCOUNTS='{"accounts":[{"email":"账户1@example.com","password":"密码1"}]}' \
-  ondemand-api-proxy
+python app.py
 ```
+服务将默认在 `0.0.0.0:7860` 启动。您可以通过 `PORT` 环境变量更改端口，通过 `FLASK_DEBUG` 环境变量或 `config.json` 中的 `FLASK_DEBUG` 键启用 Flask 的调试模式。
 
-## 客户端连接
+### 生产模式
+在生产环境中，建议使用更健壮的 WSGI 服务器，例如 Gunicorn：
+```bash
+gunicorn --workers 4 --bind 0.0.0.0:<PORT> app:app
+```
+请将 `<PORT>` 替换为您希望服务运行的实际端口号。`app:app` 指向 `app.py` 文件中的 Flask 应用实例。
 
-### Cherry Studio 连接
+## API 端点说明
 
-1. 打开 Cherry Studio
-2. 进入设置 → API 设置
-3. 选择 "OpenAI API"
-4. API 密钥填入你配置的 API 访问令牌
-5. API 地址填入你的服务地址（如 `https://你的用户名-你的space名称.hf.space/v1`）
+### 1. 聊天补全
+*   **端点**: `POST /v1/chat/completions`
+*   **描述**: 接收与 OpenAI ChatCompletion API 兼容的请求，并将其代理到 OnDemand 服务。
+*   **认证**:
+    *   请求头必须包含 `Authorization: Bearer <your_api_access_token>`，其中 `<your_api_access_token>` 是您在 `config.json` 或 `API_ACCESS_TOKEN` 环境变量中设置的代理访问令牌。
+*   **请求体**:
+    *   与 OpenAI `POST /v1/chat/completions` API 的请求体格式相同。
+    *   必需字段: `messages` (一个消息对象列表), `model` (要使用的模型名称，如 "gpt-3.5-turbo", "claude-3.5-sonnet" 等，这些名称会通过内部映射到 OnDemand 的 `endpointId`)。
+    *   可选参数: `stream` (布尔值，控制是否流式响应), `temperature`, `max_tokens`, `top_p` 等标准 OpenAI 参数。
+*   **响应体**:
+    *   如果 `stream: false` (或未提供)，返回与 OpenAI ChatCompletion API 相同的 JSON 结构。
+    *   如果 `stream: true`，返回 Server-Sent Events (SSE) 流，每条事件与 OpenAI ChatCompletionChunk API 的格式兼容。
+*   **示例请求 (curl)**:
+    ```bash
+    curl -X POST http://localhost:7860/v1/chat/completions \
+    -H "Authorization: Bearer YOUR_SECRET_PROXY_ACCESS_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "model": "gpt-3.5-turbo",
+      "messages": [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Hello!"}
+      ],
+      "stream": false
+    }'
+    ```
 
-### 其他 OpenAI 兼容客户端
+### 2. 列出模型
+*   **端点**: `GET /v1/models`
+*   **描述**: 返回代理服务当前配置支持的、与 OpenAI 兼容的模型列表。列表内容基于 `config.py` 中 `_model_mapping` 的键。
+*   **认证**: 此端点当前**不需要** `Authorization` 头部即可访问。
+*   **响应体**:
+    *   与 OpenAI `GET /v1/models` API 的响应体格式相同，包含一个模型对象列表。
+    *   示例:
+      ```json
+      {
+        "object": "list",
+        "data": [
+          {
+            "id": "gpt-3.5-turbo",
+            "object": "model",
+            "created": 1677610602,
+            "owned_by": "on-demand.io"
+          },
+          // ... 其他模型
+        ]
+      }
+      ```
 
-任何支持 OpenAI API 的客户端都可以连接到此服务，只需将 API 地址修改为你的服务地址即可。
+### 3. 用量统计页面
+*   **端点**: `GET /`
+*   **描述**: 在浏览器中访问此端点会显示一个 HTML 页面，其中包含详细的 API 用量统计信息，如总请求数、成功/失败请求、Token 使用量、成本估算、各模型使用情况等。
+*   **认证**: 无。
 
-## 故障排除
+### 4. 健康检查
+*   **端点**: `GET /health`
+*   **描述**: 返回服务的健康状态。如果服务正常运行，返回 `{"status": "ok", "message": "2API服务运行正常"}` 和 HTTP 200 状态码。
+*   **认证**: 无。
 
-### 常见问题
+### 5. 手动保存统计
+*   **端点**: `POST /save_stats`
+*   **描述**: 手动触发将当前内存中的用量统计数据保存到配置的 `stats_file_path` 文件中。
+*   **认证**: 无。成功后会重定向到统计页面 (`/`)。
 
-1. **认证失败**：
-   - 检查 API 访问令牌是否正确配置
-   - 确认请求头中包含 `Authorization: Bearer 你的令牌`
+## 高级特性说明
 
-2. **账户连接问题**：
-   - 确认 on-demand.io 账户信息正确
-   - 检查账户是否被限制或封禁
+### 账户轮询与冷却机制
+当通过 `/v1/chat/completions` 接口向 OnDemand API 发送请求时，如果某个 OnDemand 账户因为请求过于频繁而收到 429 (Too Many Requests) 错误，代理服务会自动执行以下操作：
+1.  将当前发生 429 错误的账户标记为“冷却中”，在配置的 `account_cooldown_seconds` 时间内不再使用该账户。
+2.  从 `config.json` 或 `ONDEMAND_ACCOUNTS` 环境变量配置的账户列表中选择下一个可用的账户。
+3.  使用新账户重新登录 OnDemand 并创建新的会话。
+4.  使用新账户和新会话重试原始请求。
+此机制有助于在单个账户达到速率限制时，服务仍能继续处理请求（如果配置了多个可用账户）。
 
-3. **模型不可用**：
-   - 确认请求的模型名称在支持列表中
-   - 检查 on-demand.io 是否支持该模型
+### 自动重试
+代理服务在与 OnDemand API 通信时，内置了自动重试机制，可以处理以下类型的临时性错误：
+*   **连接错误** (`requests.exceptions.ConnectionError`): 采用指数退避策略重试。
+*   **请求超时** (`requests.exceptions.Timeout`): 采用线性退避策略重试。
+*   **服务器错误** (HTTP 5xx): 采用线性退避策略重试。
+*   **速率限制错误** (HTTP 429): 如上所述，会触发账户切换和立即重试。
+最大重试次数和基础重试延迟可以通过 `config.json` 中的 `max_retries` 和 `retry_delay` 或相应的环境变量进行配置。
 
-4. **统计图表显示错误**：
-   - 清除浏览器缓存后重试
-   - 检查浏览器控制台是否有错误信息
+### Token 计算
+为了进行用量统计和成本估算，代理服务使用 `tiktoken` 库来计算请求和响应中的 token 数量。计算会根据请求中指定的模型（或默认模型）选择合适的编码器，以尽可能准确地模拟 OpenAI 的计费方式。
 
-## 安全建议
+## 日志
+项目使用 Python 的 `logging` 模块进行日志记录。
+*   日志会同时输出到控制台和文件。
+*   可以通过以下环境变量配置日志行为：
+    *   `LOG_PATH`: 日志文件的完整路径 (默认: `/tmp/2api.log`)。
+    *   `LOG_LEVEL`: 日志记录的最低级别 (DEBUG, INFO, WARNING, ERROR, CRITICAL; 默认: `INFO`)。
+    *   `LOG_FORMAT`: 日志消息的格式 (默认: `%(asctime)s - %(name)s - %(levelname)s - %(message)s`)。
 
-1. **永远不要**在代码中硬编码账户信息和访问令牌
-2. 使用环境变量或安全的配置管理系统存储敏感信息
-3. 定期更换 API 访问令牌
-4. 限制 API 的访问范围，只允许受信任的客户端连接
-5. 启用速率限制防止滥用
+## 依赖项
+主要依赖项包括：
+*   Flask
+*   requests
+*   tiktoken
 
-## 贡献与反馈
-
-欢迎提交 Issue 和 Pull Request 来改进此项目。如有任何问题或建议，请随时联系。
-
-## 许可证
-
-本项目采用 MIT 许可证。
+请查看 `requirements.txt` 获取完整的依赖列表。
