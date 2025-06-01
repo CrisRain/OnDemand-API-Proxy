@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Tuple # Added Tuple
 
 from utils import logger, mask_email
 import config
@@ -65,7 +65,7 @@ class OnDemandAPIClient:
     
     def _do_request(self, method: str, url: str, headers: Dict[str, str],
                    data: Optional[Dict] = None, stream: bool = False,
-                   timeout: int = None) -> requests.Response:
+                   timeout: Optional[int] = None) -> requests.Response: # Changed int to Optional[int]
         """执行HTTP请求的实际逻辑，不包含重试
         
         Args:
@@ -110,6 +110,7 @@ class OnDemandAPIClient:
             if context:
                 self._current_request_context_hash = context
             
+            response: Optional[requests.Response] = None # Initialize response
             try:
                 masked_email = mask_email(self.email)
                 self._log(f"尝试登录 {masked_email}...")
@@ -145,7 +146,7 @@ class OnDemandAPIClient:
                 raise  # 重新抛出异常，让装饰器处理重试
                 
             except json.JSONDecodeError as e:
-                self.last_error = f"登录 JSON 解码失败: {e}. 响应文本: {response.text if 'response' in locals() else 'N/A'}"
+                self.last_error = f"登录 JSON 解码失败: {e}. 响应文本: {response.text if response else 'N/A'}"
                 self._log(self.last_error, level="ERROR")
                 return False
                 
@@ -172,6 +173,7 @@ class OnDemandAPIClient:
             payload = {"data": {"token": self.token, "refreshToken": self.refresh_token}}
             headers = {'Content-Type': "application/json"}
             
+            response: Optional[requests.Response] = None # Initialize response
             try:
                 self._log("尝试刷新令牌...")
                 
@@ -214,7 +216,7 @@ class OnDemandAPIClient:
                 raise  # 重新抛出异常，让装饰器处理重试
                 
             except json.JSONDecodeError as e:
-                self.last_error = f"令牌刷新 JSON 解码失败: {e}. 响应文本: {response.text if 'response' in locals() else 'N/A'}"
+                self.last_error = f"令牌刷新 JSON 解码失败: {e}. 响应文本: {response.text if response else 'N/A'}"
                 self._log(self.last_error, level="ERROR")
                 return False
                 
@@ -222,6 +224,62 @@ class OnDemandAPIClient:
                 self.last_error = f"令牌刷新过程中发生意外错误: {e}"
                 self._log(self.last_error, level="ERROR")
                 return False
+
+    def _ensure_logged_in(self) -> bool:
+        """
+        Ensures the client is logged in by checking necessary tokens/IDs.
+        Attempts to sign in if not logged in.
+        Returns True if logged in or sign-in is successful, False otherwise.
+        Sets self.last_error on failure.
+        """
+        if self.token and self.user_id and self.company_id:
+            return True
+
+        original_last_error = self.last_error # Preserve previous error if any
+        self.last_error = "操作前检查：缺少 token, user_id, 或 company_id。正在尝试登录。"
+        self._log(self.last_error, level="WARNING")
+        
+        if not self.sign_in(context=self._current_request_context_hash):
+            # self.sign_in() will set its own self.last_error.
+            # We create a more specific error message for the context of the calling function.
+            current_action_error = f"前置登录失败，无法继续操作。最近的客户端错误: {self.last_error}"
+            if original_last_error: # If there was an error before this check
+                 self.last_error = f"{original_last_error}. Kemudian: {current_action_error}"
+            else:
+                 self.last_error = current_action_error
+            # No need to log here as sign_in already logs its failure.
+            return False
+        return True
+
+    def _handle_request_auth_error(self,
+                                   http_method: str,
+                                   url: str,
+                                   headers: Dict[str, str],
+                                   payload: Optional[Dict],
+                                   timeout: Optional[int]) -> requests.Response:
+        """
+        Handles an authentication error (401) by attempting to refresh the token,
+        then attempting a full sign-in, and retrying the original request.
+        Re-raises an exception if all attempts fail.
+        """
+        self._log(f"{url} 请求遇到401错误，尝试刷新令牌...", level="INFO") # Added URL to log
+        if self.refresh_token_if_needed():
+            headers['Authorization'] = f"Bearer {self.token}"
+            self._log(f"令牌刷新成功，使用新令牌重试 {url}。", level="INFO") # Added URL
+            return self._do_request(http_method, url, headers, payload, timeout=timeout)
+        else:
+            self._log(f"令牌刷新失败 {url}。尝试完全重新登录。", level="WARNING") # Added URL
+            if self.sign_in(context=self._current_request_context_hash):
+                headers['Authorization'] = f"Bearer {self.token}"
+                self._log(f"重新登录成功，使用新令牌重试 {url}。", level="INFO") # Added URL
+                return self._do_request(http_method, url, headers, payload, timeout=timeout)
+            else:
+                self.last_error = f"{url} 的请求认证失败：令牌刷新和重新登录均失败。最近的客户端错误: {self.last_error}"
+                self._log(self.last_error, level="ERROR")
+                # Raising an exception here will be caught by the @with_retry decorator,
+                # or by the calling function's RequestException handler if retries are exhausted.
+                # This is consistent with how other _do_request failures are handled.
+                raise requests.exceptions.HTTPError(self.last_error, response=None) # Or a more specific custom exception
 
     @with_retry()
     def create_session(self, external_user_id: str = "openai-adapter-user", external_context: Optional[str] = None) -> bool:
@@ -238,12 +296,13 @@ class OnDemandAPIClient:
             self.last_error = None
             if external_context:
                 self._current_request_context_hash = external_context
-            if not self.token or not self.user_id or not self.company_id:
-                self.last_error = "创建会话缺少 token, user_id, 或 company_id。正在尝试登录。"
-                self._log(self.last_error, level="WARNING")
-                if not self.sign_in():  # 如果未登录，尝试登录
-                    self.last_error = f"无法创建会话：登录失败。最近的客户端错误: {self.last_error}"
-                    return False  # 如果登录失败，则无法继续
+            
+            # Ensure client is logged in before proceeding
+            if not self._ensure_logged_in():
+                # _ensure_logged_in handles setting self.last_error and logging
+                # We might want to make the error message more specific to create_session context here
+                self.last_error = f"无法创建会话: {self.last_error}" # Append to existing error
+                return False
 
             url = f"{self.chat_base_url}/sessions"
             # 确保 externalUserId 对于每个会话是唯一的，以避免冲突
@@ -258,30 +317,25 @@ class OnDemandAPIClient:
             
             self._log(f"尝试创建会话，company_id: {self.company_id}, user_id: {self.user_id}, external_id: {unique_id}")
             
+            response: Optional[requests.Response] = None # Initialize response
             try:
                 try:
                     # 首先尝试创建会话，使用不带重试的_do_request
                     response = self._do_request('POST', url, headers, payload, timeout=config.get_config_value('request_timeout'))
                 except requests.exceptions.HTTPError as e:
-                    # 如果是401错误，尝试刷新令牌
-                    if e.response.status_code == 401:
-                        self._log("创建会话时令牌过期，尝试刷新...", level="INFO")
-                        if self.refresh_token_if_needed():
-                            headers['Authorization'] = f"Bearer {self.token}"  # 使用新令牌更新头
-                            response = self._do_request('POST', url, headers, payload, timeout=config.get_config_value('request_timeout'))
-                        else:  # 刷新失败，尝试完全重新登录
-                            self._log("令牌刷新失败。尝试完全重新登录以创建会话。", level="WARNING")
-                            if self.sign_in():
-                                headers['Authorization'] = f"Bearer {self.token}"
-                                response = self._do_request('POST', url, headers, payload, timeout=config.get_config_value('request_timeout'))
-                            else:
-                                self.last_error = f"会话创建失败：令牌刷新和重新登录均失败。最近的客户端错误: {self.last_error}"
-                                self._log(self.last_error, level="ERROR")
-                                return False
+                    if hasattr(e, 'response') and e.response is not None and e.response.status_code == 401:
+                        # 调用新的辅助函数处理401错误并重试
+                        # The helper will re-raise if it can't recover, which will be caught by the outer RequestException handler
+                        response = self._handle_request_auth_error('POST', url, headers, payload, config.get_config_value('request_timeout'))
                     else:
-                        # 其他HTTP错误，直接抛出
+                        # 其他HTTP错误，直接抛出，让 @with_retry 处理
                         raise
                 
+                # 确保 response 对象在后续代码中是有效的 Response 对象
+                # 如果 _handle_request_auth_error 成功，它会返回一个新的 response
+                # 如果初始的 _do_request 成功，response 也已经设置好了
+                # 如果发生其他类型的 HTTPError (非401) 且被上面 else raise，这里不会执行
+                # 如果 _handle_request_auth_error 内部认证失败并抛出异常，也会被外层捕获
                 data = response.json()
                 
                 if config.get_config_value('debug_mode'):
@@ -303,7 +357,7 @@ class OnDemandAPIClient:
                 raise  # 重新抛出异常，让装饰器处理重试
                 
             except json.JSONDecodeError as e:
-                self.last_error = f"会话创建 JSON 解码失败: {e}. 响应文本: {response.text if 'response' in locals() else 'N/A'}"
+                self.last_error = f"会话创建 JSON 解码失败: {e}. 响应文本: {response.text if response else 'N/A'}"
                 self._log(self.last_error, level="ERROR")
                 return False
                 
@@ -311,6 +365,111 @@ class OnDemandAPIClient:
                 self.last_error = f"会话创建过程中发生意外错误: {e}"
                 self._log(self.last_error, level="ERROR")
                 return False
+
+    def _handle_sync_response(self, response: requests.Response) -> Dict[str, Any]:
+        """
+        Handles a non-streamed (synchronous) response that was fetched in stream mode.
+        Aggregates content and handles parsing.
+        """
+        full_answer = ""
+        try:
+            # Since _do_request might be called with stream=True even for sync mode,
+            # we need to consume the stream here.
+            response_body = response.text # Read the entire response body
+            response.close() # Ensure the connection is closed
+
+            self._log(f"非流式响应原始文本 (前500字符): {response_body[:500]}", "DEBUG")
+            
+            try:
+                # Attempt to parse the entire response body as a single JSON object first
+                data = json.loads(response_body)
+                if isinstance(data, dict):
+                    if "answer" in data and isinstance(data["answer"], str):
+                        full_answer = data["answer"]
+                    elif "content" in data and isinstance(data["content"], str): # Fallback field
+                        full_answer = data["content"]
+                    elif data.get("eventType") == "fulfillment" and "answer" in data:
+                         full_answer = data.get("answer", "")
+                    else:
+                        if not full_answer: # Avoid overwriting already found answer
+                            self._log(f"非流式响应解析为JSON后，未在顶层或常见字段找到答案: {response_body[:200]}", "WARNING")
+                else:
+                    self._log(f"非流式响应解析为JSON后，不是字典类型: {type(data)}", "WARNING")
+            
+            except json.JSONDecodeError:
+                # If direct JSON parsing fails, try parsing line-by-line (SSE fallback)
+                self._log(f"非流式响应直接解析JSON失败，尝试按SSE行解析: {response_body[:200]}", "WARNING")
+                for line in response_body.splitlines():
+                    if line:
+                        # decoded_line = line # Already a str from splitlines()
+                        if line.startswith("data:"): # Use line directly
+                            json_str = line[len("data:"):].strip()
+                            if json_str == "[DONE]":
+                                break
+                            try:
+                                event_data = json.loads(json_str)
+                                if event_data.get("eventType", "") == "fulfillment":
+                                    full_answer += event_data.get("answer", "")
+                            except json.JSONDecodeError:
+                                self._log(f"非流式后备SSE解析时 JSONDecodeError: {json_str}", level="WARNING")
+                                continue
+            
+            self._log(f"非流式响应接收完毕。聚合内容长度: {len(full_answer)}")
+            return {"stream": False, "content": full_answer}
+
+        except requests.exceptions.RequestException as e:
+            self.last_error = f"非流式请求时发生错误: {e}"
+            self._log(self.last_error, level="ERROR")
+            return {"error": self.last_error, "stream": False, "content": ""}
+        except Exception as e:
+            self.last_error = f"非流式处理中发生意外错误: {e}"
+            self._log(self.last_error, level="ERROR")
+            return {"error": self.last_error, "stream": False, "content": ""}
+
+    def _prepare_query_payload(self,
+                               original_query: str, # Renamed to avoid confusion with internal var
+                               endpoint_id: str,
+                               stream_param: bool,
+                               model_configs_input: Optional[Dict],
+                               full_query_override: Optional[str]
+                               ) -> Tuple[Dict[str, Any], str]:
+        """
+        Prepares the payload for the send_query method.
+        Handles query processing, override, and model configurations.
+        Returns the payload dictionary and the current_query_text string for logging.
+        """
+        current_query_text = ""
+        if original_query is None:
+            self._log("警告：查询内容为None，已替换为空字符串", level="WARNING")
+            # current_query_text remains ""
+        elif not isinstance(original_query, str):
+            current_query_text = str(original_query)
+            self._log(f"警告：查询内容不是字符串类型，已转换为字符串: {type(original_query)} -> {type(current_query_text)}", level="WARNING")
+        else:
+            current_query_text = original_query
+
+        query_to_send = full_query_override if full_query_override is not None else current_query_text
+        if full_query_override is not None:
+            # Log the length of the override, not the original query
+            self._log(f"使用 full_query_override (长度: {len(full_query_override)}) 代替原始 query (长度: {len(current_query_text)}).", "DEBUG")
+
+
+        payload = {
+            "endpointId": endpoint_id,
+            "query": query_to_send,
+            "pluginIds": [],
+            "responseMode": "stream" if stream_param else "sync",
+            "debugMode": "on" if config.get_config_value('debug_mode') else "off",
+            "fulfillmentOnly": False
+        }
+
+        if model_configs_input:
+            processed_model_configs = {k: v for k, v in model_configs_input.items() if v is not None}
+            if processed_model_configs:
+                payload["modelConfigs"] = processed_model_configs
+        
+        return payload, current_query_text
+
 
     @with_retry()
     def send_query(self, query: str, endpoint_id: str = "predefined-claude-3.7-sonnet",
@@ -346,38 +505,9 @@ class OnDemandAPIClient:
 
             url = f"{self.chat_base_url}/sessions/{self.session_id}/query"
             
-            # 处理 query 输入
-            current_query = ""
-            if query is None:
-                self._log("警告：查询内容为None，已替换为空字符串", level="WARNING")
-            elif not isinstance(query, str):
-                current_query = str(query)
-                self._log(f"警告：查询内容不是字符串类型，已转换为字符串: {type(query)} -> {type(current_query)}", level="WARNING")
-            else:
-                current_query = query
-
-            # 优先使用 full_query_override
-            query_to_send = full_query_override if full_query_override is not None else current_query
-            if full_query_override is not None:
-                self._log(f"使用 full_query_override (长度: {len(full_query_override)}) 代替原始 query。", "DEBUG")
-
-            payload = {
-                "endpointId": endpoint_id,
-                "query": query_to_send, # 使用处理后的 query 或 override
-                "pluginIds": [],
-                "responseMode": "stream" if stream else "sync",
-                "debugMode": "on" if config.get_config_value('debug_mode') else "off",
-                "fulfillmentOnly": False
-            }
-            
-            # 处理 model_configs_input
-            if model_configs_input:
-                # 直接使用传入的 model_configs_input，只包含非 None 值
-                # API 应该能处理额外的、非预期的配置项，或者忽略它们
-                # 如果API严格要求特定字段，那么这里的逻辑需要更精确地过滤
-                processed_model_configs = {k: v for k, v in model_configs_input.items() if v is not None}
-                if processed_model_configs: # 只有当有有效配置时才添加modelConfigs
-                    payload["modelConfigs"] = processed_model_configs
+            payload, current_query_for_log = self._prepare_query_payload(
+                query, endpoint_id, stream, model_configs_input, full_query_override
+            )
             
             self._log(f"最终的payload: {json.dumps(payload, ensure_ascii=False)}", level="DEBUG")
             
@@ -387,8 +517,9 @@ class OnDemandAPIClient:
                 'x-company-id': self.company_id
             }
             
-            truncated_query_log = current_query[:100] + "..." if len(current_query) > 100 else current_query
-            self._log(f"向端点 {endpoint_id} 发送查询 (stream={stream})。查询内容: {truncated_query_log}")
+            # Use current_query_for_log which is the processed original query before override
+            truncated_query_log = current_query_for_log[:100] + "..." if len(current_query_for_log) > 100 else current_query_for_log
+            self._log(f"向端点 {endpoint_id} 发送查询 (stream={stream})。查询内容 (截断): {truncated_query_log}")
 
             try:
                 response = self._do_request('POST', url, headers, payload, stream=True, timeout=config.get_config_value('stream_timeout'))
@@ -397,63 +528,7 @@ class OnDemandAPIClient:
                     self._log("返回流式响应对象供外部处理")
                     return {"stream": True, "response_obj": response}
                 else: # stream (方法参数) 为 False
-                    full_answer = ""
-                    try:
-                        # 既然 _do_request 总是 stream=True，我们仍然需要消耗这个流。
-                        # OnDemand API 在 responseMode="sync" 时，理论上应该直接返回完整内容。
-                        
-                        response_body = response.text # 读取整个响应体
-                        response.close() # 确保连接关闭
-
-                        self._log(f"非流式响应原始文本 (前500字符): {response_body[:500]}", "DEBUG")
-                        
-                        try:
-                            # 优先尝试将整个响应体按单个JSON对象解析
-                            data = json.loads(response_body)
-                            if isinstance(data, dict):
-                                if "answer" in data and isinstance(data["answer"], str):
-                                    full_answer = data["answer"]
-                                elif "content" in data and isinstance(data["content"], str): # 备选字段
-                                    full_answer = data["content"]
-                                elif data.get("eventType") == "fulfillment" and "answer" in data:
-                                     full_answer = data.get("answer", "")
-                                else:
-                                    if not full_answer: # 避免覆盖已找到的答案
-                                        self._log(f"非流式响应解析为JSON后，未在顶层或常见字段找到答案: {response_body[:200]}", "WARNING")
-                            else:
-                                self._log(f"非流式响应解析为JSON后，不是字典类型: {type(data)}", "WARNING")
-                        
-                        except json.JSONDecodeError:
-                            # 如果直接解析JSON失败，再尝试按行解析SSE（作为后备）
-                            self._log(f"非流式响应直接解析JSON失败，尝试按SSE行解析: {response_body[:200]}", "WARNING")
-                            for line in response_body.splitlines():
-                                if line:
-                                    decoded_line = line #已经是str
-                                    if decoded_line.startswith("data:"):
-                                        json_str = decoded_line[len("data:"):].strip()
-                                        if json_str == "[DONE]":
-                                            break
-                                        try:
-                                            event_data = json.loads(json_str)
-                                            if event_data.get("eventType", "") == "fulfillment":
-                                                full_answer += event_data.get("answer", "")
-                                        except json.JSONDecodeError:
-                                            self._log(f"非流式后备SSE解析时 JSONDecodeError: {json_str}", level="WARNING")
-                                            continue
-                        
-                        self._log(f"非流式响应接收完毕。聚合内容长度: {len(full_answer)}")
-                        return {"stream": False, "content": full_answer}
-
-                    except requests.exceptions.RequestException as e: # 这应该在 _do_request 中捕获并重试
-                        self.last_error = f"非流式请求时发生错误: {e}"
-                        self._log(self.last_error, level="ERROR")
-                        # 如果 _do_request 抛异常到这里，说明重试也失败了
-                        # raise e # 或者返回错误结构体，让上层处理
-                        return {"error": self.last_error, "stream": False, "content": ""}
-                    except Exception as e:
-                        self.last_error = f"非流式处理中发生意外错误: {e}"
-                        self._log(self.last_error, level="ERROR")
-                        return {"error": self.last_error, "stream": False, "content": ""}
+                    return self._handle_sync_response(response)
             
             except requests.exceptions.RequestException as e:
                 self.last_error = f"请求失败: {e}"

@@ -4,7 +4,7 @@ import uuid
 import html
 import hashlib # Added import
 from datetime import datetime
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple # Added Tuple
 from flask import request, Response, stream_with_context, jsonify, render_template, redirect, url_for, flash
 from datetime import datetime
 
@@ -138,6 +138,190 @@ def _update_usage_statistics(
 
         # 移除了request_history相关代码
 
+# Helper function to process OnDemand stream and yield OpenAI chunks
+def _process_ondemand_stream_to_openai_chunks(
+    stream_response_obj: Optional[Any],  # Actual type is requests.Response, but for flexibility
+    request_id: str,
+    requested_model_name: str,
+    original_openai_messages: List[Dict[str, str]],
+    ondemand_client_email: Optional[str],
+    request_start_time: float,
+    final_query_to_ondemand: str,
+    config_inst: config.Config
+):
+    """
+    Processes an OnDemand stream and yields OpenAI-compatible SSE chunks.
+    Handles token counting, statistics updates, and error reporting within the stream.
+    """
+    if not stream_response_obj:
+        prompt_tokens, _, _ = count_message_tokens(original_openai_messages, requested_model_name)
+        error_json = {
+            "id": request_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": requested_model_name,
+            "choices": [{"delta": {"content": "[流错误：未获取到响应对象]"}, "index": 0, "finish_reason": "error"}],
+            "usage": {"prompt_tokens": prompt_tokens or 0, "completion_tokens": 0, "total_tokens": prompt_tokens or 0}
+        }
+        yield f"data: {json.dumps(error_json, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    full_reply = []
+    actual_tokens = {"input": 0, "output": 0, "total": 0}
+    
+    try:
+        for line in stream_response_obj.iter_lines():
+            if not line:
+                continue
+                
+            decoded_line = line.decode('utf-8')
+            if not decoded_line.startswith("data:"):
+                continue
+                
+            json_str = decoded_line[len("data:"):]
+            json_str = json_str.strip()
+
+            if json_str == "[DONE]":
+                break
+                
+            try:
+                event_data = json.loads(json_str)
+                event_type = event_data.get("eventType", "")
+                
+                if event_type == "fulfillment":
+                    content = event_data.get("answer", "")
+                    if content is not None:
+                        full_reply.append(content)
+                        chunk_data = {
+                            'id': request_id,
+                            'object': 'chat.completion.chunk',
+                            'created': int(time.time()),
+                            'model': requested_model_name,
+                            'choices': [{'delta': {'content': content}, 'index': 0, 'finish_reason': None}]
+                        }
+                        yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
+                
+                elif event_type == "metricsLog":
+                    metrics = event_data.get("publicMetrics", {})
+                    if metrics:
+                        actual_tokens["input"] = metrics.get("inputTokens", 0) or 0
+                        actual_tokens["output"] = metrics.get("outputTokens", 0) or 0
+                        actual_tokens["total"] = metrics.get("totalTokens", 0) or 0
+            except json.JSONDecodeError as je:
+                logger.warning(f"Stream JSONDecodeError for chunk: '{json_str}'. Error: {je}")
+                continue
+        
+        if not any(actual_tokens.values()):
+            prompt_tokens, _, _ = count_message_tokens(original_openai_messages, requested_model_name)
+            completion_tokens = max(1, len("".join(str(item) for item in full_reply if isinstance(item, str))) // 4)
+            total_tokens = (prompt_tokens or 0) + completion_tokens
+        else:
+            prompt_tokens = actual_tokens["input"]
+            completion_tokens = actual_tokens["output"]
+            total_tokens = actual_tokens["total"]
+        
+        end_chunk_data = {
+            'id': request_id,
+            'object': 'chat.completion.chunk',
+            'created': int(time.time()),
+            'model': requested_model_name,
+            'choices': [{'delta': {}, 'index': 0, 'finish_reason': 'stop'}],
+            'usage': {
+                'prompt_tokens': prompt_tokens,
+                'completion_tokens': completion_tokens,
+                'total_tokens': total_tokens
+            }
+        }
+        yield f"data: {json.dumps(end_chunk_data, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+        
+        _update_usage_statistics(
+            config_inst=config_inst,
+            request_id=request_id,
+            requested_model_name=requested_model_name,
+            account_email=ondemand_client_email,
+            is_success=True,
+            duration_ms=int((time.time() - request_start_time) * 1000),
+            is_stream=True,
+            prompt_tokens_val=prompt_tokens,
+            completion_tokens_val=completion_tokens,
+            total_tokens_val=total_tokens,
+            prompt_length=len(final_query_to_ondemand)
+        )
+    except Exception as e:
+        logger.error(f"Error during stream processing for request {request_id}: {e}", exc_info=True)
+        prompt_tokens, _, _ = count_message_tokens(original_openai_messages, requested_model_name)
+        error_chunk_data = {
+            'id': request_id,
+            'object': 'chat.completion.chunk',
+            'created': int(time.time()),
+            'model': requested_model_name,
+            'choices': [{'delta': {'content': f'[流处理异常: {str(e)}]'}, 'index': 0, 'finish_reason': 'error'}],
+            'usage': {'prompt_tokens': prompt_tokens or 0, 'completion_tokens': 0, 'total_tokens': prompt_tokens or 0}
+        }
+        yield f"data: {json.dumps(error_chunk_data, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+        
+        _update_usage_statistics(
+            config_inst=config_inst,
+            request_id=request_id,
+            requested_model_name=requested_model_name,
+            account_email=ondemand_client_email,
+            is_success=False,
+            duration_ms=int((time.time() - request_start_time) * 1000),
+            is_stream=True,
+            prompt_tokens_val=prompt_tokens or 0,
+            completion_tokens_val=0,
+            total_tokens_val=prompt_tokens or 0,
+            error_message=str(e)
+        )
+    finally:
+        if stream_response_obj and hasattr(stream_response_obj, 'close'):
+            stream_response_obj.close()
+
+def _get_or_create_ondemand_client(
+    user_token: str,
+    request_id_val: str,
+    remote_addr: Optional[str],
+    config_inst: config.Config,
+) -> Tuple[Optional[OnDemandAPIClient], Optional[str]]: # 返回客户端和用于统计的邮件地址
+    """
+    尝试创建一个新的 OnDemandAPIClient 实例。
+    如果配置了多个账户，则会按顺序尝试，直到成功创建一个客户端或达到最大尝试次数。
+    此函数总是尝试创建新的客户端实例，不涉及会话复用。
+    返回一个元组 (OnDemandAPIClient 或 None, 最后尝试的电子邮件地址或 None)。
+    """
+    last_attempted_email: Optional[str] = None
+    # 此函数旨在为每个请求创建并初始化一个新的 OnDemandAPIClient。
+    # 它会迭代尝试配置中的账户，直到成功登录并创建会话。
+    # 不会复用先前存在的客户端实例或会话。
+
+    max_attempts = config_inst.get('max_account_attempts', 3)
+    for _ in range(max_attempts):
+        email, password = config_inst.get_next_ondemand_account_details()
+        if not email or not password:
+            logger.warning(f"[{request_id_val}] _get_or_create_ondemand_client: No more account details available.")
+            continue
+        
+        last_attempted_email = email # Store last attempted email for stats if all fail
+        client_id_str = f"{user_token[:8]}-{email.split('@')[0]}-{request_id_val[:4]}"
+        temp_client = OnDemandAPIClient(email, password, client_id=client_id_str)
+        
+        # _associated_user_identifier and _associated_request_ip are set after successful creation
+        # _current_request_context_hash is set on the client by create_session if needed
+        if temp_client.sign_in() and temp_client.create_session(): # Pass context if needed
+            temp_client._associated_user_identifier = user_token
+            temp_client._associated_request_ip = remote_addr
+            logger.info(f"[{request_id_val}] Successfully created OnDemand client with account {email}")
+            return temp_client, email # Return client and the email used
+        else:
+            logger.warning(f"[{request_id_val}] Failed to initialize client with account {email}. Last error: {temp_client.last_error}")
+            # The @with_retry on sign_in/create_session handles cooldowns if applicable.
+    
+    logger.error(f"[{request_id_val}] Failed to create a valid OnDemand client after {max_attempts} attempts. Last attempted email: {last_attempted_email}")
+    return None, last_attempted_email # All attempts failed, return last email for stats
+
 def register_routes(app):
     """注册所有路由到Flask应用"""
     
@@ -207,27 +391,21 @@ def register_routes(app):
             return {"error": {"message": "'messages' 中未找到有效的 'user' 角色的消息内容。", "type": "invalid_request_error", "code": "no_user_message"}}, 400
         
         # 创建新的客户端会话
-        ondemand_client = None
-        email_for_stats = None
+        # email_for_stats will be set by the helper or remain None
+        email_for_stats: Optional[str] = None
         
-        with config_instance.client_sessions_lock:
-            MAX_ACCOUNT_ATTEMPTS = config_instance.get('max_account_attempts', 3)
-            for attempt in range(MAX_ACCOUNT_ATTEMPTS):
-                email, password = config.get_next_ondemand_account_details()
-                if not email or not password:
-                    continue
-                
-                email_for_stats = email
-                client_id = f"{token[:8]}-{email.split('@')[0]}-{request_id[:4]}"
-                temp_client = OnDemandAPIClient(email, password, client_id=client_id)
-                
-                if temp_client.sign_in() and temp_client.create_session():
-                    ondemand_client = temp_client
-                    ondemand_client._associated_user_identifier = token
-                    ondemand_client._associated_request_ip = request.remote_addr
-                    break
-            
-            if not ondemand_client:
+        # Call the helper function to get or create a client
+        # The client_sessions_lock is not directly managed here anymore if the helper
+        # or underlying config methods handle necessary synchronization.
+        # Based on previous analysis, get_next_ondemand_account_details has its own lock.
+        ondemand_client, email_for_stats_from_helper = _get_or_create_ondemand_client(
+            token, request_id, request.remote_addr, config_instance
+        )
+        
+        if email_for_stats_from_helper: # If helper returned an email (even on failure)
+            email_for_stats = email_for_stats_from_helper
+
+        if not ondemand_client:
                 error_msg = "无法创建有效的客户端会话"
                 prompt_tokens, _, _ = count_message_tokens(messages, requested_model_name)
                 _update_usage_statistics(
@@ -288,140 +466,18 @@ def register_routes(app):
         # 处理响应
         if stream_requested:
             # 流式响应
-            def generate_openai_stream():
-                stream_response_obj = ondemand_result.get("response_obj")
-                if not stream_response_obj:
-                    prompt_tokens, _, _ = count_message_tokens(messages, requested_model_name)
-                    error_json = {
-                        "id": request_id,
-                        "object": "chat.completion.chunk",
-                        "created": int(time.time()),
-                        "model": requested_model_name,
-                        "choices": [{"delta": {"content": "[流错误：未获取到响应对象]"}, "index": 0, "finish_reason": "error"}],
-                        "usage": {"prompt_tokens": prompt_tokens or 0, "completion_tokens": 0, "total_tokens": prompt_tokens or 0}
-                    }
-                    yield f"data: {json.dumps(error_json, ensure_ascii=False)}\n\n"
-                    yield "data: [DONE]\n\n"
-                    return
-
-                # 用于聚合完整回复和跟踪token统计
-                full_reply = []
-                actual_tokens = {"input": 0, "output": 0, "total": 0}
-                
-                try:
-                    for line in stream_response_obj.iter_lines():
-                        if not line:
-                            continue
-                            
-                        decoded_line = line.decode('utf-8')
-                        if not decoded_line.startswith("data:"):
-                            continue
-                            
-                        json_str = decoded_line[len("data:"):].strip()
-                        if json_str == "[DONE]":
-                            break
-                            
-                        try:
-                            event_data = json.loads(json_str)
-                            event_type = event_data.get("eventType", "")
-                            
-                            # 处理内容块
-                            if event_type == "fulfillment":
-                                content = event_data.get("answer", "")
-                                if content is not None:
-                                    full_reply.append(content)
-                                    chunk_data = {
-                                        'id': request_id,
-                                        'object': 'chat.completion.chunk',
-                                        'created': int(time.time()),
-                                        'model': requested_model_name,
-                                        'choices': [{'delta': {'content': content}, 'index': 0, 'finish_reason': None}]
-                                    }
-                                    yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
-                            
-                            # 从metrics事件中提取准确的token计数
-                            elif event_type == "metricsLog":
-                                metrics = event_data.get("publicMetrics", {})
-                                if metrics:
-                                    actual_tokens["input"] = metrics.get("inputTokens", 0) or 0
-                                    actual_tokens["output"] = metrics.get("outputTokens", 0) or 0
-                                    actual_tokens["total"] = metrics.get("totalTokens", 0) or 0
-                        except json.JSONDecodeError:
-                            continue
-                    
-                    # 使用实际token或回退到估算
-                    if not any(actual_tokens.values()):
-                        prompt_tokens, _, _ = count_message_tokens(messages, requested_model_name)
-                        completion_tokens = max(1, len("".join(full_reply)) // 4)  # 粗略估算
-                        total_tokens = (prompt_tokens or 0) + completion_tokens
-                    else:
-                        prompt_tokens = actual_tokens["input"]
-                        completion_tokens = actual_tokens["output"]
-                        total_tokens = actual_tokens["total"]
-                    
-                    # 发送终止块
-                    end_chunk_data = {
-                        'id': request_id,
-                        'object': 'chat.completion.chunk',
-                        'created': int(time.time()),
-                        'model': requested_model_name,
-                        'choices': [{'delta': {}, 'index': 0, 'finish_reason': 'stop'}],
-                        'usage': {
-                            'prompt_tokens': prompt_tokens,
-                            'completion_tokens': completion_tokens,
-                            'total_tokens': total_tokens
-                        }
-                    }
-                    yield f"data: {json.dumps(end_chunk_data, ensure_ascii=False)}\n\n"
-                    yield "data: [DONE]\n\n"
-                    
-                    # 更新使用统计
-                    _update_usage_statistics(
-                        config_inst=config_instance,
-                        request_id=request_id,
-                        requested_model_name=requested_model_name,
-                        account_email=ondemand_client.email,
-                        is_success=True,
-                        duration_ms=int((time.time() - request_start_time) * 1000),
-                        is_stream=True,
-                        prompt_tokens_val=prompt_tokens,
-                        completion_tokens_val=completion_tokens,
-                        total_tokens_val=total_tokens,
-                        prompt_length=len(final_query_to_ondemand)
-                    )
-                except Exception as e:
-                    # 处理异常
-                    prompt_tokens, _, _ = count_message_tokens(messages, requested_model_name)
-                    error_chunk_data = {
-                        'id': request_id,
-                        'object': 'chat.completion.chunk',
-                        'created': int(time.time()),
-                        'model': requested_model_name,
-                        'choices': [{'delta': {'content': f'[流处理异常: {str(e)}]'}, 'index': 0, 'finish_reason': 'error'}],
-                        'usage': {'prompt_tokens': prompt_tokens or 0, 'completion_tokens': 0, 'total_tokens': prompt_tokens or 0}
-                    }
-                    yield f"data: {json.dumps(error_chunk_data, ensure_ascii=False)}\n\n"
-                    yield "data: [DONE]\n\n"
-                    
-                    # 更新失败统计
-                    _update_usage_statistics(
-                        config_inst=config_instance,
-                        request_id=request_id,
-                        requested_model_name=requested_model_name,
-                        account_email=ondemand_client.email,
-                        is_success=False,
-                        duration_ms=int((time.time() - request_start_time) * 1000),
-                        is_stream=True,
-                        prompt_tokens_val=prompt_tokens or 0,
-                        completion_tokens_val=0,
-                        total_tokens_val=prompt_tokens or 0,
-                        error_message=str(e)
-                    )
-                finally:
-                    if stream_response_obj:
-                        stream_response_obj.close()
-            
-            return Response(stream_with_context(generate_openai_stream()),
+            # 调用新的辅助函数处理流
+            stream_generator = _process_ondemand_stream_to_openai_chunks(
+                stream_response_obj=ondemand_result.get("response_obj"),
+                request_id=request_id,
+                requested_model_name=requested_model_name,
+                original_openai_messages=messages, # Pass original messages
+                ondemand_client_email=ondemand_client.email, # Pass client's email
+                request_start_time=request_start_time,
+                final_query_to_ondemand=final_query_to_ondemand,
+                config_inst=config_instance # Pass config_instance
+            )
+            return Response(stream_with_context(stream_generator),
                            content_type='text/event-stream; charset=utf-8')
         else:
             # 非流式响应

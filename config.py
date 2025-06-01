@@ -126,15 +126,8 @@ class Config:
         # 线程锁
         self.usage_stats_lock = threading.Lock()  # 用于线程安全的统计数据访问
         self.account_index_lock = threading.Lock()  # 用于线程安全的账户选择
-        self.client_sessions_lock = threading.Lock()  # 用于线程安全的会话管理
-        
         # 当前账户索引（用于创建新客户端会话时的轮询选择）
         self.current_account_index = 0
-        
-        # 内存中存储每个客户端的会话和最后交互时间
-        # 格式: {用户标识符: {账户邮箱: {"client": OnDemandAPIClient实例, "last_time": datetime对象}}}
-        # 这样确保不同用户的会话是隔离的，每个用户只能访问自己的会话
-        self.client_sessions = {}
         
         # 账户信息
         self.accounts = []
@@ -183,13 +176,6 @@ class Config:
         with self.usage_stats_lock:
             # 创建深层一些的副本可能更安全，但这里为了性能暂时只复制顶层
             return self.usage_stats.copy()
-
-    def get_client_sessions(self) -> Dict[str, Any]:
-        """获取客户端会话信息"""
-        # 返回副本以防止外部修改
-        with self.client_sessions_lock:
-            # 创建深层一些的副本可能更安全，但这里为了性能暂时只复制顶层
-            return self.client_sessions.copy()
 
     def load_from_file(self) -> bool:
         """从配置文件加载配置"""
@@ -462,11 +448,6 @@ def get_usage_stats() -> Dict[str, Any]:
     """获取用量统计 (兼容函数)"""
     logger.warning("调用全局 get_usage_stats() 函数，推荐使用 config_instance.get_usage_stats()")
     return config_instance.get_usage_stats()
-
-def get_client_sessions() -> Dict[str, Any]:
-    """获取客户端会话 (兼容函数)"""
-    logger.warning("调用全局 get_client_sessions() 函数，推荐使用 config_instance.get_client_sessions()")
-    return config_instance.get_client_sessions()
 
 def get_next_ondemand_account_details():
     """获取下一个账户的邮箱和密码 (兼容函数)"""

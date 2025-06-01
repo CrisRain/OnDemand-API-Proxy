@@ -250,55 +250,20 @@ class RateLimitStrategy(RetryStrategy):
                                 setattr(self.client, '_new_session_requires_full_history', False)
 
 
-                        # --- 新增: 更新 client_sessions ---
-                        if not user_identifier:
-                            if hasattr(self.client, '_log'):
-                                self.client._log("RateLimitStrategy: _associated_user_identifier not found on client. Cannot update client_sessions.", "ERROR")
-                            # 即使没有 user_identifier，账号切换和会话创建也已发生，只是无法更新全局会话池
-                        else:
-                            old_email_in_strategy = current_email # 切换前的 email
-                            new_email_in_strategy = self.client.email # 切换后的 email (即 new_email)
-
-                            with config.config_instance.client_sessions_lock:
-                                if user_identifier in config.config_instance.client_sessions:
-                                    user_specific_sessions = config.config_instance.client_sessions[user_identifier]
-
-                                    # 1. 移除旧 email 的条目 (如果存在)
-                                    #    我们只移除那些 client 实例确实是当前 self.client 的条目，
-                                    #    或者更简单地，如果旧 email 存在，就移除它，因为 user_identifier
-                                    #    现在应该通过 new_email 使用这个（已被修改的）client 实例。
-                                    if old_email_in_strategy in user_specific_sessions:
-                                        # 检查 client 实例是否匹配可能不可靠，因为 client 内部状态已变。
-                                        # 直接删除旧 email 的条目，因为这个 user_identifier + client 组合现在用新 email。
-                                        del user_specific_sessions[old_email_in_strategy]
-                                        if hasattr(self.client, '_log'):
-                                            self.client._log(f"RateLimitStrategy: Removed session for old email '{old_email_in_strategy}' for user '{user_identifier}'.", "INFO")
-                                    
-                                    # 2. 添加/更新新 email 的条目
-                                    #    确保它指向当前这个已被修改的 self.client 实例
-                                    #    并重置 active_context_hash。
-                                    #    IP 地址应来自 self.client._associated_request_ip 或 routes.py 中设置的值。
-                                    #    由于 routes.py 在创建/分配会话时已将 IP 存入 client_sessions，
-                                    #    这里我们主要关注 client 实例和 active_context_hash。
-                                    #    如果 request_ip 在 self.client 中可用，则使用它，否则尝试保留已有的。
-                                    ip_to_use = request_ip if request_ip else user_specific_sessions.get(new_email_in_strategy, {}).get("ip", "unknown_ip_in_retry_update")
-                                    
-                                    # 从 client 实例获取原始请求的上下文哈希
-                                    # 这个哈希应该由 routes.py 在调用 send_query 之前设置到 client 实例上
-                                    active_hash_for_new_session = getattr(self.client, '_current_request_context_hash', None)
-
-                                    user_specific_sessions[new_email_in_strategy] = {
-                                        "client": self.client, # 关键: 指向当前更新了 email/session_id 的 client 实例
-                                        "active_context_hash": active_hash_for_new_session, # 使用来自 client 实例的哈希
-                                        "last_time": datetime.now(), # 更新时间
-                                        "ip": ip_to_use
-                                    }
-                                    log_message_hash_part = f"set to '{active_hash_for_new_session}' (from client instance's _current_request_context_hash)" if active_hash_for_new_session is not None else "set to None (_current_request_context_hash not found on client instance)"
-                                    if hasattr(self.client, '_log'):
-                                        self.client._log(f"RateLimitStrategy: Updated/added session for new email '{new_email_in_strategy}' for user '{user_identifier}'. active_context_hash {log_message_hash_part}.", "INFO")
-                                else:
-                                    if hasattr(self.client, '_log'):
-                                        self.client._log(f"RateLimitStrategy: User '{user_identifier}' not found in client_sessions during update attempt.", "WARNING")
+                        # --- 更新 client_sessions via Config method ---
+                        if user_identifier and self.client:
+                            # current_email is the old email before switch
+                            # self.client now holds the new email and new session details
+                            # current_context_hash was captured before re-login
+                            config.config_instance.update_client_session_after_rate_limit_switch(
+                                user_identifier=user_identifier,
+                                old_email=current_email,
+                                new_client_instance=self.client,
+                                request_ip=request_ip,
+                                active_context_hash=current_context_hash
+                            )
+                        elif hasattr(self.client, '_log'):
+                            self.client._log("RateLimitStrategy: Skipping client_sessions update due to missing user_identifier or client.", "WARNING")
                         # --- 更新 client_sessions 结束 ---
 
                     except Exception as e:

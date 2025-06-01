@@ -1,17 +1,13 @@
 import os
 from flask import Flask
 import config
-from auth import start_cleanup_thread
 from routes import register_routes
 
 def create_app():
     """创建并配置Flask应用"""
     config.init_config() # 调整到 create_app 开头
     app = Flask(__name__)
-    
-    # 启动会话清理线程
-    start_cleanup_thread()
-    
+
     # 注册路由
     register_routes(app)
     
